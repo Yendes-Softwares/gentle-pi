@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import {
 	access,
 	mkdir,
@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, normalize, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const REGISTRY_REL_PATH = ".atl/skill-registry.md";
@@ -26,6 +27,13 @@ const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";
 const LEGACY_PROJECT_REGISTRY_DISABLED_REL_PATH =
 	".pi/extensions/skill-registry.ts.disabled";
+const SKILL_REGISTRY_EXTENSION_SOURCE_KEY =
+	"__gentlePiSkillRegistryExtensionSource";
+
+interface SkillRegistryExtensionGlobal {
+	[SKILL_REGISTRY_EXTENSION_SOURCE_KEY]?: string;
+}
+
 async function pathExists(path: string): Promise<boolean> {
 	try {
 		await access(path);
@@ -415,6 +423,40 @@ function shouldSkipSkillRegistryStartup(
 	);
 }
 
+function normalizeExtensionSource(source: string): string {
+	return source.split(/[?#]/, 1)[0];
+}
+
+function extensionSourcePath(source: string): string | undefined {
+	const cleanSource = normalizeExtensionSource(source);
+	if (!cleanSource.startsWith("file:")) return undefined;
+	try {
+		return comparablePath(fileURLToPath(cleanSource));
+	} catch {
+		return undefined;
+	}
+}
+
+function shouldSkipDuplicateExtensionLoad(
+	source = import.meta.url,
+	cwd = process.cwd(),
+	state = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
+): boolean {
+	const currentPath = extensionSourcePath(source);
+	const projectLocalPath = comparablePath(join(cwd, "extensions", "skill-registry.ts"));
+	if (currentPath && currentPath !== projectLocalPath && existsSync(projectLocalPath)) {
+		return true;
+	}
+
+	const currentSource = currentPath ?? normalizeExtensionSource(source);
+	const existingSource = state[SKILL_REGISTRY_EXTENSION_SOURCE_KEY];
+	if (!existingSource) {
+		state[SKILL_REGISTRY_EXTENSION_SOURCE_KEY] = currentSource;
+		return false;
+	}
+	return existingSource !== currentSource;
+}
+
 async function startSkillRegistryWatcher(
 	cwd: string,
 	notify: (message: string) => void,
@@ -460,9 +502,12 @@ export const __testing = {
 	parseFrontmatter,
 	renderRegistry,
 	shouldSkipSkillRegistryStartup,
+	shouldSkipDuplicateExtensionLoad,
 };
 
 export default function (pi: ExtensionAPI) {
+	if (shouldSkipDuplicateExtensionLoad()) return;
+
 	pi.registerFlag(NO_SKILL_REGISTRY_FLAG, {
 		description: "Skip the Gentle AI skill registry refresh and watcher on startup.",
 		type: "boolean",

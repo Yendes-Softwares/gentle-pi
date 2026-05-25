@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { __testing } from "../extensions/skill-registry.ts";
 
 test("project skill dirs include supported workspace roots", () => {
@@ -113,6 +114,43 @@ test("startup skip honors no skill registry controls", () => {
 		true,
 	);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], {}), false);
+});
+
+test("duplicate extension load is skipped only across different sources", () => {
+	const state = {};
+
+	assert.equal(
+		__testing.shouldSkipDuplicateExtensionLoad("file:///repo/extensions/skill-registry.ts?first", "/workspace", state),
+		false,
+	);
+	assert.equal(
+		__testing.shouldSkipDuplicateExtensionLoad("file:///repo/extensions/skill-registry.ts?second", "/workspace", state),
+		false,
+	);
+	assert.equal(
+		__testing.shouldSkipDuplicateExtensionLoad("file:///home/.pi/node_modules/gentle-pi/extensions/skill-registry.ts", "/workspace", state),
+		true,
+	);
+});
+
+test("project-local skill registry extension wins over installed package copy", () => {
+	const cwd = join(tmpdir(), `gentle-pi-local-extension-${Date.now()}`);
+	const localExtension = join(cwd, "extensions", "skill-registry.ts");
+	mkdirSync(dirname(localExtension), { recursive: true });
+	writeFileSync(localExtension, "");
+
+	assert.equal(
+		__testing.shouldSkipDuplicateExtensionLoad(
+			"file:///home/.pi/agent/npm/node_modules/gentle-pi/extensions/skill-registry.ts",
+			cwd,
+			{},
+		),
+		true,
+	);
+	assert.equal(
+		__testing.shouldSkipDuplicateExtensionLoad(pathToFileURL(localExtension).href, cwd, {}),
+		false,
+	);
 });
 
 test("scope and markdown cells are represented in registry", () => {
