@@ -933,6 +933,44 @@ async function run() {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
+
+		let exportPanelCalls = 0;
+		ctx.ui.custom = () => {
+			exportPanelCalls += 1;
+			return Promise.resolve(exportPanelCalls === 1 ? { type: "export", config: {} } : { type: "cancel" });
+		};
+		await commands.get("gentle:models").handler("", ctx);
+		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
+		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
+		assert.equal(exported.version, 1);
+		assert.deepEqual(exported.agents["sdd-apply"], {
+			model: "custom/provider-model",
+			thinking: "medium",
+		});
+
+		await writeFile(
+			join(globalConfigHome, "models.export.json"),
+			JSON.stringify({
+				kind: "gentle-pi.agent_model_routing",
+				version: 1,
+				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
+			}, null, 2),
+		);
+		let restorePanelCalls = 0;
+		ctx.ui.confirm = async () => true;
+		ctx.ui.custom = () => {
+			restorePanelCalls += 1;
+			return Promise.resolve(restorePanelCalls === 1 ? { type: "restore", config: {} } : { type: "cancel" });
+		};
+		await commands.get("gentle:models").handler("", ctx);
+		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
+		assert.deepEqual(restoredConfig["sdd-apply"], {
+			model: "restore/provider",
+			thinking: "high",
+		});
+		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
+		assert.match(restoredAgent, /model: restore\/provider/);
+		assert.match(restoredAgent, /thinking: high/);
 	} finally {
 		await rm(modelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });

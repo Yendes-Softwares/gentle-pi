@@ -417,6 +417,13 @@ function modelConfigPath(_cwd: string): string {
 	return join(gentleAiConfigHome(), "models.json");
 }
 
+function modelExportPath(_cwd: string): string {
+	return join(gentleAiConfigHome(), "models.export.json");
+}
+
+const MODEL_EXPORT_KIND = "gentle-pi.agent_model_routing";
+const MODEL_EXPORT_VERSION = 1;
+
 function legacyProjectModelConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "models.json");
 }
@@ -567,15 +574,56 @@ export async function readModelConfigAsync(
 	return result.status === "valid" ? result.config : {};
 }
 
+function normalizeModelConfig(value: unknown): AgentModelConfig | undefined {
+	if (!isRecord(value)) return undefined;
+	const cleaned: AgentModelConfig = {};
+	for (const [name, entryValue] of Object.entries(value)) {
+		if (!/^[A-Za-z0-9._:@/+%-]+$/.test(name)) continue;
+		const entry = normalizeRoutingEntry(entryValue);
+		if (entry) cleaned[name] = entry;
+	}
+	return cleaned;
+}
+
 function writeModelConfig(cwd: string, config: AgentModelConfig): void {
 	const path = modelConfigPath(cwd);
 	mkdirSync(dirname(path), { recursive: true });
-	const cleaned: AgentModelConfig = {};
-	for (const [name, value] of Object.entries(config)) {
-		const entry = normalizeRoutingEntry(value);
-		if (entry) cleaned[name] = entry;
-	}
+	const cleaned = normalizeModelConfig(config) ?? {};
 	writeFileSync(path, `${JSON.stringify(cleaned, null, 2)}\n`);
+}
+
+async function writeModelConfigAsync(cwd: string, config: AgentModelConfig): Promise<void> {
+	const path = modelConfigPath(cwd);
+	await mkdir(dirname(path), { recursive: true });
+	const cleaned = normalizeModelConfig(config) ?? {};
+	await writeFile(path, `${JSON.stringify(cleaned, null, 2)}\n`);
+}
+
+function parseModelExport(value: unknown): AgentModelConfig | undefined {
+	if (!isRecord(value)) return undefined;
+	if (value.kind !== MODEL_EXPORT_KIND || value.version !== MODEL_EXPORT_VERSION) return undefined;
+	return normalizeModelConfig(value.agents);
+}
+
+async function exportSavedModelConfig(ctx: ExtensionContext): Promise<number> {
+	const saved = await readSavedModelConfigAsync(ctx.cwd);
+	if (saved.status === "invalid") throw new Error(`Invalid model config: ${saved.path}`);
+	const agents = saved.status === "valid" ? saved.config : {};
+	const path = modelExportPath(ctx.cwd);
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(
+		path,
+		`${JSON.stringify({ kind: MODEL_EXPORT_KIND, version: MODEL_EXPORT_VERSION, agents }, null, 2)}\n`,
+	);
+	return Object.keys(agents).length;
+}
+
+async function readModelExport(ctx: ExtensionContext): Promise<AgentModelConfig | undefined> {
+	try {
+		return parseModelExport(JSON.parse(await readFile(modelExportPath(ctx.cwd), "utf8")));
+	} catch {
+		return undefined;
+	}
 }
 
 function cloneModelConfig(config: AgentModelConfig): AgentModelConfig {
@@ -950,6 +998,8 @@ interface OverlayComponent {
 type ModelPanelResult =
 	| { type: "save"; config: AgentModelConfig }
 	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
+	| { type: "export"; config: AgentModelConfig }
+	| { type: "restore"; config: AgentModelConfig }
 	| { type: "cancel" };
 
 const SET_ALL_AGENTS = "Set all agents";
@@ -1048,6 +1098,14 @@ class SddModelPanel implements OverlayComponent {
 			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
 			this.mode = "effort";
 			this.effortCursor = 0;
+			return;
+		}
+		if (matchesKey(data, "x")) {
+			this.done({ type: "export", config: this.draft });
+			return;
+		}
+		if (matchesKey(data, "r")) {
+			this.done({ type: "restore", config: this.draft });
 			return;
 		}
 		if (matchesKey(data, "c")) {
@@ -1226,7 +1284,7 @@ class SddModelPanel implements OverlayComponent {
 		lines.push("");
 		lines.push(
 			line(
-				"j/k: scroll • g/G: top/bottom • enter: change model / confirm • e: effort • i: inherit • c: custom • ctrl+s: save • esc: back",
+				"j/k scroll • enter model/save • e effort • i inherit • c custom • x export • r restore • ctrl+s save • esc back",
 			),
 		);
 		return lines;
@@ -1360,8 +1418,40 @@ async function handleModelsCommand(ctx: ExtensionContext): Promise<void> {
 	}
 	let config = savedConfig.status === "valid" ? savedConfig.config : {};
 	let result = await showSddModelPanel(ctx, config);
-	while (result.type === "custom") {
+	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
 		config = cloneModelConfig(result.config);
+		if (result.type === "export") {
+			try {
+				const count = await exportSavedModelConfig(ctx);
+				ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
+			} catch (error) {
+				ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
+			result = await showSddModelPanel(ctx, config);
+			continue;
+		}
+		if (result.type === "restore") {
+			const restored = await readModelExport(ctx);
+			if (!restored) {
+				ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
+				result = await showSddModelPanel(ctx, config);
+				continue;
+			}
+			const approved = await ctx.ui.confirm("Restore saved model routing?", `Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`);
+			if (approved) {
+				await writeModelConfigAsync(ctx.cwd, restored);
+				const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
+				config = restored;
+				ctx.ui.notify([
+					"el Gentleman restored global model config.",
+					`Import: ${modelExportPath(ctx.cwd)}`,
+					`Global config: ${modelConfigPath(ctx.cwd)}`,
+					`Agents updated: ${applyResult.updated}`,
+				].join("\n"), "info");
+			}
+			result = await showSddModelPanel(ctx, config);
+			continue;
+		}
 		const current =
 			result.agent === "all"
 				? "inherit"
