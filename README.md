@@ -45,10 +45,10 @@ Most coding-agent sessions fail for operational reasons, not model reasons:
 
 | Capability                     | What it does                                                                                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default.               |
-| **Rose startup intro**         | Adds a pink rose fade-in, compact project/runtime panel, and visible startup collaboration credit for @aporcelli's `pi-gentle-startup` ideas. |
+| **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default; neutral mode is saved globally with project overrides. |
+| **Configurable startup intro** | Adds a rose/text-logo startup intro, compact runtime panel, color presets, and commands to hide or show the decorative parts.                  |
 | **Work routing discipline**    | Small tasks stay inline. Context-heavy exploration can be delegated. Large or risky changes go through SDD/OpenSpec.                          |
-| **SDD/OpenSpec assets**        | Installs phase agents and chains for `init`, `explore`, `proposal`, `spec`, `design`, `tasks`, `apply`, `verify`, and `archive`.              |
+| **SDD/OpenSpec assets**        | Installs phase agents and chains for `init`, `onboard`, `explore`, `proposal`, `spec`, `design`, `tasks`, `apply`, `verify`, `sync`, and `archive`. |
 | **Lazy SDD preflight**         | Asks once per session for SDD mode, artifact store, PR chaining strategy, and review budget before the first SDD flow.                        |
 | **Subagent orchestration**     | Keeps one parent session responsible while child agents explore, implement, test, or review with focused context.                             |
 | **Strict TDD support**         | When project config declares a test command, apply/verify phases must record RED → GREEN → TRIANGULATE → REFACTOR evidence.                   |
@@ -56,7 +56,7 @@ Most coding-agent sessions fail for operational reasons, not model reasons:
 | **Per-agent model assignment** | Pi-native modal for assigning stronger or cheaper models to specific SDD/custom agents.                                                       |
 | **Skill discovery registry**   | Maintains `.atl/skill-registry.md` from project and user skills so review/comment/PR workflows do not silently miss the right skill.          |
 | **Delivery skills**            | Includes issue-first PRs, chained PRs, work-unit commits, cognitive docs, comment writing, and Judgment Day review.                           |
-| **Shell safety**               | Blocks destructive shell commands and asks for confirmation for sensitive operations.                                                         |
+| **Runtime safety**             | Blocks destructive shell commands, asks for confirmation for sensitive operations, and blocks direct read/write/edit access to sensitive paths. |
 
 ## Install
 
@@ -88,10 +88,12 @@ pi
 
 ```text
 /gentle-ai:status          Check package, SDD assets, OpenSpec, and global model config.
+/gentle-ai:doctor          Run read-only diagnostics for SDD assets, config, tools, and guards.
 /gentle-ai:sdd-preflight   Run or reuse the session SDD preflight explicitly.
 /sdd-init                  Create or refresh openspec/config.yaml.
 /gentle:models             Assign global model/effort routing to SDD/custom agents.
 /gentle:persona            Switch between gentleman and neutral persona modes.
+/gentle:banner             Configure startup rose, text logo, and color preset.
 ```
 
 Typical flow:
@@ -315,13 +317,19 @@ Delegation contract:
 | `gentleman` | Senior architect, teacher, direct technical feedback, Rioplatense Spanish/voseo when the user writes Spanish. |
 | `neutral`   | Same discipline, warmer professional language, no regional expression.                                        |
 
-Saved at:
+Saved globally at:
+
+```text
+~/.pi/gentle-ai/persona.json
+```
+
+A project can still override the global default with:
 
 ```text
 .pi/gentle-ai/persona.json
 ```
 
-Run `/reload` or start a new Pi session after switching persona.
+`/gentle:persona` writes the global config and updates an existing project override when one is present, so the current project does not stay stale. Run `/reload` or start a new Pi session after switching persona.
 
 ## Model and effort assignment
 
@@ -376,8 +384,9 @@ Legacy string entries are still accepted and treated as `model`-only config.
 | Command                          | What it does                                                        |
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle-ai:status`              | Shows package, SDD asset, OpenSpec, and global model config status. |
-| `/gentle:models`                 | Opens global model + effort assignment UI.                          |
-| `/gentle:persona`                | Switches persona mode.                                              |
+| `/gentle-ai:doctor`              | Runs read-only diagnostics for SDD assets, model/persona config, memory tools, and safety guards. |
+| `/gentle:models`                 | Opens global model + effort assignment UI. Press `x` to export and `r` to restore saved routing. |
+| `/gentle:persona`                | Switches global persona mode, with project override support.        |
 | `/gentle:banner`                 | Configures startup banner rose, text logo, and color preset.        |
 | `/gentle:toggle-rose`            | Toggles the startup rose.                                           |
 | `/gentle:toggle-text-logo`       | Toggles the startup text logo.                                      |
@@ -385,7 +394,6 @@ Legacy string entries are still accepted and treated as `model`-only config.
 | `/sdd-init`                      | Initializes or refreshes `openspec/config.yaml`.                    |
 | `/gentle-ai:install-sdd`         | Repairs missing global SDD runtime assets without overwriting files. |
 | `/gentle-ai:install-sdd --force` | Force-refreshes installed global SDD assets.                         |
-
 | `/skill-registry:refresh`        | Regenerates `.atl/skill-registry.md`.                               |
 
 Package-owned global SDD runtime assets are also refreshed automatically on session start when `gentle-pi` changes. Project-local `.pi/agents` and `.pi/chains` remain manual overrides and are never overwritten by startup refresh.
@@ -407,6 +415,10 @@ Compatibility aliases:
 /gentleman:models
 /gentle-ai:persona
 /gentleman:persona
+/gentle-ai:banner
+/gentle-ai:toggle-rose
+/gentle-ai:toggle-text-logo
+/gentle-ai:banner-color
 ```
 
 ## Included skills
@@ -443,10 +455,10 @@ Memory contract for SDD delegation:
 
 | Path                           | Purpose                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `extensions/gentle-ai.ts`      | Injects identity, ensures global SDD assets, registers commands, applies model config, and protects shell execution. |
-| `extensions/startup-banner.ts` | Shows the rose startup intro, compact runtime panel, and collaboration credit.                             |
+| `extensions/gentle-ai.ts`      | Injects identity, auto-refreshes global SDD assets, registers commands, applies model/persona config, exports/restores model routing, and enforces runtime safety. |
+| `extensions/startup-banner.ts` | Shows and configures the startup intro, color presets, compact runtime panel, and collaboration credit.     |
 | `extensions/sdd-init.ts`       | Registers `/sdd-init` for OpenSpec initialization.                                                         |
-| `extensions/skill-registry.ts` | Maintains `.atl/skill-registry.md` from project/user skills.                                               |
+| `extensions/skill-registry.ts` | Maintains `.atl/skill-registry.md` from project/user skills and closes file watchers on shutdown.          |
 | `assets/orchestrator.md`       | Parent-session orchestration contract.                                                                     |
 | `assets/agents/`               | SDD agents installed as global Pi runtime assets.                                                          |
 | `assets/chains/`               | SDD chains installed as global Pi runtime assets.                                                          |
