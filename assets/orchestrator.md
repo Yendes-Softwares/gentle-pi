@@ -88,7 +88,7 @@ If `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool or 
 
 ### Pi Subagent Model Routing
 
-For generic Pi subagents (`delegate`, `worker`, `scout`, `reviewer`, `context-builder`, `oracle`, `planner`, `researcher`, or other non-SDD agents), do not pass the `model` parameter by default. Let `pi-subagents` resolve model and thinking from `.pi/settings.json`, `.pi/subagents.json`, global subagent config, and runtime defaults.
+For generic Pi subagents (`delegate`, `worker`, `scout`, review lens agents, `context-builder`, `oracle`, `planner`, `researcher`, or other non-SDD agents), do not pass the `model` parameter by default. Let `pi-subagents` resolve model and thinking from `.pi/settings.json`, `.pi/subagents.json`, global subagent config, and runtime defaults.
 
 SDD model assignment tables apply only to SDD/Judgment-Day phase agents. They must not be used for generic Pi delegation.
 
@@ -97,7 +97,7 @@ Only pass `model` for generic subagents when the user explicitly requests a mode
 Default balanced pattern for bounded implementation:
 
 ```text
-parent clarifies and checks git → scout/context-builder when context-heavy → one worker writes → fresh reviewer audits diff → parent validates and reports
+parent clarifies and checks git → scout/context-builder when context-heavy → one worker writes → selected review lens audits diff → parent validates and reports
 ```
 
 Do not make every task SDD. Do make non-trivial tasks multi-agent at the narrowest useful point.
@@ -139,10 +139,10 @@ These are parent-orchestrator stop rules. Once any trigger fires, the parent MUS
 
 1. **4-file rule**: if understanding requires reading 4+ files, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task. State the fallback agent/runtime if the preferred one is unavailable.
 2. **Multi-file write rule**: if implementation will touch 2+ non-trivial files, delegate one writer; inline writing is allowed only for trivial/mechanical edits or when the parent explicitly records why no delegation runtime is available. A fresh review still follows delegated implementation.
-3. **PR rule**: before commit/push/PR for code changes, run a fresh-context reviewer unless the diff is trivial docs/text-only.
-4. **Incident rule**: after wrong `cwd`, accidental repo/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and run a fresh audit reviewer before continuing.
+3. **PR rule**: before commit/push/PR for code changes, select a fresh-context review lens unless the diff is trivial docs/text-only.
+4. **Incident rule**: after wrong `cwd`, accidental repo/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and run a fresh audit through the relevant review lens before continuing.
 5. **Long-session rule**: if accumulating work is no longer clearly local — roughly 20 tool calls, 5 exploratory file reads, or 2 non-mechanical edits without delegation — pause and delegate the remaining work instead of silently continuing monolithically.
-6. **Fresh review rule**: use fresh-context reviewer/audit subagents for adversarial review of diffs, conflicts, PR readiness, and incidents. Use continuity-oriented workers only for implementation work that needs inherited state.
+6. **Fresh review rule**: use fresh-context review lens subagents for adversarial review of diffs, conflicts, PR readiness, and incidents. Use continuity-oriented workers only for implementation work that needs inherited state.
 
 ### Cost and Context Balance
 
@@ -150,7 +150,7 @@ Prefer delegation when fresh context improves correctness more than token saving
 
 - Use `scout`/`context-builder` to compress broad repo exploration into a short handoff instead of loading many files into the parent.
 - Use a single `worker` for one writer thread; do not run parallel writers unless isolated worktrees are explicitly approved.
-- Use fresh `reviewer` agents after implementation, conflict resolution, or incidents because their value is independence from the parent's assumptions.
+- Use fresh concrete review lens agents after implementation, conflict resolution, or incidents because their value is independence from the parent's assumptions. Do not call a generic `reviewer` subagent; choose from `review-risk`, `review-reliability`, `review-resilience`, `review-readability`, or the full 4R set.
 - Use `outputMode: "file-only"` for large child reports and summarize only decisions, blockers, and paths in the parent thread.
 - Avoid delegation for truly local one-file fixes, quick state checks, and already-understood mechanical edits.
 
@@ -159,20 +159,34 @@ Prefer delegation when fresh context improves correctness more than token saving
 Bugfix with unfamiliar flow:
 
 ```text
-parent git/status + clarify → scout fresh maps flow/files → parent decides → worker fork implements + tests → reviewer fresh audits diff → parent validates
+parent git/status + clarify → scout fresh maps flow/files → parent decides → worker fork implements + tests → selected review lens audits diff → parent validates
 ```
 
 Conflict or dependency-marker cleanup:
 
 ```text
-parent reproduces/checks conflict → parent or worker resolves → reviewer fresh checks markers, package/lock consistency, and repo cleanliness → parent reports/pushes
+parent reproduces/checks conflict → parent or worker resolves → selected review lens checks markers, package/lock consistency, and repo cleanliness → parent reports/pushes
 ```
 
 After tooling/worktree incident:
 
 ```text
-stop writes → parent captures git status → reviewer fresh audits affected repos/worktrees with no edits → parent applies only confirmed recovery steps
+stop writes → parent captures git status → selected review lens audits affected repos/worktrees with no edits → parent applies only confirmed recovery steps
 ```
+
+### Review Lens Selection
+
+`reviewer` is an intent, not an installed subagent name. The parent must select concrete review agents by risk profile:
+
+| Context | Review lens |
+| --- | --- |
+| Clear naming, structure, maintainability, small refactors | `review-readability` |
+| Behavior, state, tests, determinism, regressions | `review-reliability` |
+| Shell/process integration, partial failures, recovery, degraded dependencies | `review-resilience` |
+| Security, permissions, data exposure/loss, architecture, dependencies | `review-risk` |
+| Large PR, hot path, or >400 changed lines | Full 4R: `review-risk`, `review-resilience`, `review-readability`, `review-reliability` |
+
+If multiple rows match, run the narrow set that covers the risk. Example: shell integration that mutates live state should use `review-reliability` plus `review-resilience`, not `review-readability` by default.
 
 ## SDD Workflow
 
