@@ -115,19 +115,19 @@ Typical flow:
 | Unknown codebase area or context-heavy investigation                        | Focused subagent delegation. |
 | Large, ambiguous, architectural, product-facing, or high-review-risk change | SDD/OpenSpec flow.           |
 
-The goal is not ceremony. The goal is to avoid accidental chaos. Once a task stops being small, delegation is expected rather than optional.
+The goal is not ceremony. The goal is to avoid accidental chaos. Once a task stops being small, delegation is mandatory.
 
 ### Delegation triggers
 
-`gentle-pi` keeps the parent session thin and uses subagents at the narrowest useful point:
+`gentle-pi` keeps the parent session thin and delegates at the narrowest useful point. When the Pi Subagents extension is installed, the preferred runtime is the `subagent_*` tool family because it runs the user's configured project/global subagent definitions and preserves history/background behavior. If those tools are unavailable, the parent should fall back to Pi's native `Agent` tool or another available delegation mechanism. The requirement is delegation; the runtime is capability-dependent.
 
-| Trigger                                                                                                                     | Expected behavior                                                    |
-| --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Reading 4+ files to understand a flow                                                                                       | Launch `scout` or `context-builder` and synthesize its handoff.      |
-| Touching 2+ non-trivial code files                                                                                          | Use one `worker`, or require fresh review before completion.         |
-| Commit, push, or PR after code changes                                                                                      | Run a fresh-context `reviewer` unless the diff is trivial docs/text. |
-| Wrong cwd, worktree/git accident, merge recovery, confusing test/env issue                                                  | Stop and run a fresh audit reviewer before continuing.               |
-| Long monolithic session with accumulating complexity, roughly 20 tool calls, 5 exploratory reads, or 2 non-mechanical edits | Pause and delegate or explain why not.                               |
+| Trigger                                                                                                                     | Required behavior                                                             |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Reading 4+ files to understand a flow                                                                                       | Launch `scout`, `context-builder`, or the closest read-only mapping subagent. |
+| Touching 2+ non-trivial code files                                                                                          | Delegate one writer; do not continue inline unless delegation is unavailable. |
+| Commit, push, or PR after code changes                                                                                      | Run a fresh-context `reviewer` unless the diff is trivial docs/text.          |
+| Wrong cwd, worktree/git accident, merge recovery, confusing test/env issue                                                  | Stop and run a fresh audit reviewer before continuing.                        |
+| Long monolithic session with accumulating complexity, roughly 20 tool calls, 5 exploratory reads, or 2 non-mechanical edits | Pause and delegate the remaining work, or stop and explain the exact blocker. |
 
 The intended balanced loop for a bounded bugfix is:
 

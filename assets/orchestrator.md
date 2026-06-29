@@ -82,7 +82,9 @@ Examples:
 - run tests/builds and summarize results;
 - fresh-context review.
 
-Use `pi-subagents-j0k3r` when available. Prefer background/async for long exploration, implementation, tests, or review when the parent has independent work.
+Use the configured subagent runtime when available. Prefer the `subagent_*` tools (`subagent_run`, status/result helpers) when the Pi Subagents extension is installed, because they run the user's configured project/global subagent definitions and preserve history/background behavior. Prefer `subagent_run` with `mode: "background"` for long independent exploration, implementation, tests, or review, and `mode: "task"` when the parent needs the result before continuing.
+
+If `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool or another available delegation mechanism. The delegation trigger remains mandatory; the fallback changes the runtime, not the requirement to delegate. If no delegation mechanism is available, stop the complex work and explain the blocker instead of silently continuing inline.
 
 ### Pi Subagent Model Routing
 
@@ -133,14 +135,14 @@ Core question: does this inflate parent context without need?
 
 ### Mandatory Delegation Triggers
 
-These are parent-orchestrator stop rules. Once any trigger fires, the parent must either delegate or explicitly tell the user why delegation would be unsafe or wasteful for this exact case. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
+These are parent-orchestrator stop rules. Once any trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent` or another available delegation mechanism. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
-1. **4-file rule**: if understanding requires reading 4+ files, launch `scout` or `context-builder` with fresh context and a narrow mapping task.
-2. **Multi-file write rule**: if implementation will touch 2+ non-trivial files, use one `worker` or keep writing inline only if a fresh reviewer will audit before completion.
-3. **PR rule**: before commit/push/PR for code changes, run a fresh-context `reviewer` unless the diff is a trivial docs/text-only change.
-4. **Incident rule**: after wrong `cwd`, accidental repo/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and run a fresh audit reviewer.
-5. **Long-session rule**: if accumulating work is no longer clearly local — roughly 20 tool calls, 5 exploratory file reads, or 2 non-mechanical edits without delegation — pause and choose `scout`, `worker`, or `reviewer` instead of silently continuing monolithically.
-6. **Fresh review rule**: use `context: "fresh"` for adversarial review of diffs, conflicts, PR readiness, and incident audits. Use forked context for continuity-oriented `worker`/`oracle` tasks.
+1. **4-file rule**: if understanding requires reading 4+ files, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task. State the fallback agent/runtime if the preferred one is unavailable.
+2. **Multi-file write rule**: if implementation will touch 2+ non-trivial files, delegate one writer; inline writing is allowed only for trivial/mechanical edits or when the parent explicitly records why no delegation runtime is available. A fresh review still follows delegated implementation.
+3. **PR rule**: before commit/push/PR for code changes, run a fresh-context reviewer unless the diff is trivial docs/text-only.
+4. **Incident rule**: after wrong `cwd`, accidental repo/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and run a fresh audit reviewer before continuing.
+5. **Long-session rule**: if accumulating work is no longer clearly local — roughly 20 tool calls, 5 exploratory file reads, or 2 non-mechanical edits without delegation — pause and delegate the remaining work instead of silently continuing monolithically.
+6. **Fresh review rule**: use fresh-context reviewer/audit subagents for adversarial review of diffs, conflicts, PR readiness, and incidents. Use continuity-oriented workers only for implementation work that needs inherited state.
 
 ### Cost and Context Balance
 
