@@ -187,7 +187,8 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [257, 276], target: "skills", label: "Intent-Driven Skill Discovery detail" },
 	{ lines: [278, 283], target: "core", label: "Safety" },
 	{ lines: [285, 285], target: "core", label: "4R Review Triggers heading" },
-	{ lines: [287, 312], target: "delegation", label: "4R Review Triggers body + Review Execution Contract" },
+	{ lines: [287, 300], target: "obsolete", label: "Superseded blocking 4R trigger body" },
+	{ lines: [301, 312], target: "delegation", label: "Review Execution Contract" },
 ];
 
 function isNormativeLine(line: string): boolean {
@@ -243,9 +244,14 @@ test("core-alone: load-bearing delegation tokens present without lazy union", ()
 	assert.match(core, /Fresh review rule/);
 });
 
-test("core-alone: 400 changed lines threshold present without lazy union", () => {
+test("core-alone: routing boundaries and advice-only safety are present without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /400 changed lines/);
+	assert.match(core, /400 changed lines.*standard/i);
+	assert.match(core, /401 changed lines.*full 4R/i);
+	assert.match(core, /trivial.*zero lenses/i);
+	assert.match(core, /pre-commit.*pre-push.*never run full 4R/i);
+	assert.match(core, /review advice never blocks/i);
+	assert.match(core, /dangerous-command confirmation remains authoritative/i);
 });
 
 test("core-alone: all four review lens names present without lazy union", () => {
@@ -254,6 +260,14 @@ test("core-alone: all four review lens names present without lazy union", () => 
 	assert.match(core, /review-reliability/);
 	assert.match(core, /review-resilience/);
 	assert.match(core, /review-readability/);
+});
+
+test("live orchestrator assets remove the stale strong-gate retry contract", () => {
+	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}`;
+	assert.doesNotMatch(content, /strong gate/i);
+	assert.doesNotMatch(content, /extension blocks.*gh pr create/i);
+	assert.doesNotMatch(content, /before the user retries the PR command/i);
+	assert.doesNotMatch(content, /validateTriggerRuleSet/);
 });
 
 // ---------------------------------------------------------------------------

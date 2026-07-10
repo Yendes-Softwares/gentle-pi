@@ -165,21 +165,33 @@ If multiple rows match, run the narrow set that covers the risk. Example: shell 
 
 ## 4R Review Triggers
 
-The extension (`extensions/gentle-ai.ts`) gates `bash` tool calls that look like git/gh workflow events. Gate semantics:
+The extension classifies recognized git/gh workflow diffs and emits advice only:
 
-- **pre-commit** (`git commit`): advisory only. The extension notifies the user to consider running `review-readability` but does NOT block. No orchestrator action needed.
-- **pre-push** (`git push`): advisory only. Same as pre-commit — notify, do not block.
-- **pre-pr** (`gh pr create`): **strong gate**. The extension blocks when any of these hold:
-  - Changed paths match hot globs: `**/auth/**`, `**/update/**`, `**/security/**`, `**/payments/**`
-  - Diff exceeds 400 changed lines (added + deleted)
-  - When blocked, the reason names all four agents to run first.
-- **post-sdd-phase** (design, apply): **strong gate** for the packaged `gentle-ai-judgment-day` skill. Handled separately by SDD phase orchestration, not this diff-based hook.
+- **Trivial**: use zero lenses only when complete evidence proves every change is documentation, comments, formatting, or a string typo and no executable/configuration content changed.
+- **Standard**: use exactly one dominant lens. Precedence is risk, resilience, reliability, then readability fallback. Ambiguous executable/configuration changes fail conservatively to standard.
+- **Full 4R**: for a non-trivial hot path or strictly more than 400 changed lines, use `review-risk`, `review-resilience`, `review-readability`, and `review-reliability` in that order. Exactly 400 remains standard; 401 is full.
+- **Event ceiling**: pre-commit and pre-push never run full 4R; cap them at one standard lens. Pre-PR, CI, and schedule may run full 4R.
 
-When the extension blocks a `gh pr create` command, the orchestrator must launch the `4r-review` chain (or run the four agents individually) and wait for their reports before the user retries the PR command.
-
-Prohibition: do NOT configure the full 4R fan-out on `pre-commit` or `pre-push` with `always: true`. Everyday events must use a single advisory lens to keep development-loop cost low (spec G token-budget rule). The `validateTriggerRuleSet` function in `lib/review-triggers.ts` enforces this at config load time.
+Review advice never pauses, denies, or requires a receipt. Continue to independent command safety after notification; dangerous-command denial or confirmation remains authoritative. Post-SDD design/apply uses the separate Judgment Day path.
 
 ### Review Execution Contract
+
+The parent owns merge, persistence, refutation, voting, fixes, and scoped re-review. The static `4r-review` chain performs lens discovery and returns reports only.
+
+**Precision limits.** Standard review runs exactly one complete sweep. Full 4R runs at most two complete sweeps per lens. Every finding MUST include concrete evidence of user impact; speculative findings are rejected.
+
+**Findings ledger.** Emit a findings ledger with this schema for every entry:
+
+| Field | Values |
+|-------|--------|
+| `id` | `{LENS}-{NNN}` (e.g. `R1-001`) |
+| `lens` | risk \| readability \| reliability \| resilience \| judgment-day |
+| `location` | `path/to/file.ext:line` or `:start-end` |
+| `severity` | BLOCKER \| CRITICAL \| WARNING \| SUGGESTION |
+| `status` | open \| refuted \| fixed \| verified \| wont-fix \| info |
+| `evidence` | why it matters |
+
+`refuted` is terminal and MUST NOT be reopened by later rounds. WARNING and SUGGESTION rows are recorded once with status `info` and MUST NOT schedule fixes.
 
 **Ledger persistence honors the artifact store.**
 - `openspec`: write `openspec/changes/{change-name}/review-ledger.md`.
@@ -187,6 +199,14 @@ Prohibition: do NOT configure the full 4R fan-out on `pre-commit` or `pre-push` 
 - `none`: keep the ledger inline in the response; do not write files or Engram artifacts — the ledger lives only in this conversation; complete the review → fix → re-review loop within the session because it is not persisted across compaction.
 
 If the first pass finds nothing, persist an empty ledger record rather than skip persistence.
+
+**Constant refutation.** When no surviving BLOCKER/CRITICAL candidates exist, refutation launches zero actors. Standard review launches exactly one non-parallel general refuter. Full 4R launches exactly three parallel refuters: correctness, impact/exploitability, and reproducibility. Every active refuter receives the complete merged BLOCKER/CRITICAL candidate list. Per-finding refuter tasks and replacement refuters are forbidden.
+
+**Mode-specific voting.** Refuter outputs are keyed by finding ID. In standard review, the general refuter's single `refuted` verdict terminally refutes only that finding. In full 4R, at least two of three valid `refuted` verdicts terminally refute only that finding. `stands`, unknown, duplicate, malformed, omitted, or missing verdicts preserve the finding.
+
+**Scoped convergence.** Re-review receives only the authoritative ledger and the fix diff. Re-review assesses affected ledger rows and regressions introduced by the fix. Only surviving BLOCKER/CRITICAL rows MAY schedule a fix round. At most two scoped fix/re-review rounds may run. Severe rows surviving round two MUST escalate; a third round MUST NOT run.
+
+**Judgment Day exception.** Each Judgment Day judge runs exactly one complete blind sweep. Judgment Day launches exactly two blind judges in parallel and zero refuters. Judgment Day applies the same two-round limit to surviving BLOCKER/CRITICAL rows. Judgment Day WARNING and SUGGESTION rows remain `info` and MUST NOT schedule fixes.
 
 Subagent execution-mode: this agent runs its lens exhaustively as a dedicated Pi subagent and returns its own ledger rows in its Output; the orchestrator merges those ledger rows into the persisted ledger.
 

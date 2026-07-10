@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SddArtifactStore } from "./sdd-status.ts";
@@ -9,6 +10,8 @@ export type { SddArtifactStore };
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ASSETS_DIR = join(PACKAGE_ROOT, "assets");
+const MANAGED_ASSETS_MANIFEST = "managed-assets.json";
+const MANAGED_ASSETS_SCHEMA_VERSION = 1;
 
 function gentlePiAgentHome(): string {
 	return process.env.GENTLE_PI_AGENT_HOME ?? join(homedir(), ".pi", "agent");
@@ -52,6 +55,11 @@ interface SddPreflightCallbacks {
 		| Promise<{ updated: number; skipped: number; invalidPath?: string }>;
 }
 
+interface ManagedAssetsManifest {
+	schemaVersion: number;
+	assets: Record<string, string>;
+}
+
 const DEFAULT_SDD_PREFLIGHT: SddPreflightPreferences = {
 	executionMode: "interactive",
 	artifactStore: "openspec",
@@ -66,6 +74,89 @@ const sddPreflightInFlight = new Map<string, Promise<SddPreflightPreferences>>()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function emptyManagedAssetsManifest(): ManagedAssetsManifest {
+	return {
+		schemaVersion: MANAGED_ASSETS_SCHEMA_VERSION,
+		assets: {},
+	};
+}
+
+function readManagedAssetsManifest(path: string): ManagedAssetsManifest {
+	if (!existsSync(path)) return emptyManagedAssetsManifest();
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (
+			!isRecord(parsed) ||
+			parsed.schemaVersion !== MANAGED_ASSETS_SCHEMA_VERSION ||
+			!isRecord(parsed.assets)
+		) {
+			return emptyManagedAssetsManifest();
+		}
+		const assets = Object.fromEntries(
+			Object.entries(parsed.assets).filter(
+				(entry): entry is [string, string] => typeof entry[1] === "string",
+			),
+		);
+		return { schemaVersion: MANAGED_ASSETS_SCHEMA_VERSION, assets };
+	} catch {
+		return emptyManagedAssetsManifest();
+	}
+}
+
+function managedAssetHash(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+export function updatePackageManagedSddAgentOwnership(
+	installedPath: string,
+	previousContent: string,
+	nextContent: string,
+): boolean {
+	const agentHome = gentlePiAgentHome();
+	const relativePath = relative(join(agentHome, "agents"), installedPath);
+	if (
+		relativePath.length === 0 ||
+		relativePath === ".." ||
+		relativePath.startsWith(`..${sep}`) ||
+		isAbsolute(relativePath)
+	) {
+		return false;
+	}
+	const ownershipKey = `agents/${relativePath.split(sep).join("/")}`;
+	const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+	const manifest = readManagedAssetsManifest(manifestPath);
+	if (manifest.assets[ownershipKey] !== managedAssetHash(previousContent)) {
+		return false;
+	}
+	try {
+		if (readFileSync(installedPath, "utf8") !== nextContent) return false;
+		manifest.assets[ownershipKey] = managedAssetHash(nextContent);
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function isPackageManagedSddAsset(
+	installedPath: string,
+	ownershipKey: string,
+): boolean {
+	const manifest = readManagedAssetsManifest(
+		join(gentlePiAgentHome(), "gentle-ai", MANAGED_ASSETS_MANIFEST),
+	);
+	const expectedHash = manifest.assets[ownershipKey];
+	if (expectedHash === undefined || !existsSync(installedPath)) return false;
+	try {
+		return (
+			managedAssetHash(readFileSync(installedPath, "utf8")) ===
+			expectedHash
+		);
+	} catch {
+		return false;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +216,9 @@ export function writeSddPreflightToDisk(cwd: string, prefs: SddPreflightPreferen
 function copyDirectoryFiles(
 	sourceDir: string,
 	targetDir: string,
+	ownershipPrefix: string,
 	force: boolean,
+	manifest: ManagedAssetsManifest,
 ): { copied: number; skipped: number } {
 	if (!existsSync(sourceDir)) return { copied: 0, skipped: 0 };
 	mkdirSync(targetDir, { recursive: true });
@@ -134,18 +227,41 @@ function copyDirectoryFiles(
 	for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
 		const sourcePath = join(sourceDir, entry.name);
 		const targetPath = join(targetDir, entry.name);
+		const ownershipKey = `${ownershipPrefix}/${entry.name}`;
 		if (entry.isDirectory()) {
-			const child = copyDirectoryFiles(sourcePath, targetPath, force);
+			const child = copyDirectoryFiles(
+				sourcePath,
+				targetPath,
+				ownershipKey,
+				force,
+				manifest,
+			);
 			copied += child.copied;
 			skipped += child.skipped;
 			continue;
 		}
 		if (!entry.isFile()) continue;
-		if (!force && existsSync(targetPath)) {
-			skipped += 1;
-			continue;
+		if (existsSync(targetPath)) {
+			if (!force) {
+				skipped += 1;
+				continue;
+			}
+			const managedHash = manifest.assets[ownershipKey];
+			let installedHash: string | undefined;
+			try {
+				installedHash = managedAssetHash(readFileSync(targetPath, "utf8"));
+			} catch {
+				installedHash = undefined;
+			}
+			if (managedHash === undefined || installedHash !== managedHash) {
+				delete manifest.assets[ownershipKey];
+				skipped += 1;
+				continue;
+			}
 		}
-		writeFileSync(targetPath, readFileSync(sourcePath));
+		const source = readFileSync(sourcePath, "utf8");
+		writeFileSync(targetPath, source);
+		manifest.assets[ownershipKey] = managedAssetHash(source);
 		copied += 1;
 	}
 	return { copied, skipped };
@@ -156,21 +272,31 @@ export function installSddAssets(
 	force: boolean,
 ): { agents: number; chains: number; support: number; skipped: number } {
 	const agentHome = gentlePiAgentHome();
+	const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+	const manifest = readManagedAssetsManifest(manifestPath);
 	const agents = copyDirectoryFiles(
 		join(ASSETS_DIR, "agents"),
 		join(agentHome, "agents"),
+		"agents",
 		force,
+		manifest,
 	);
 	const chains = copyDirectoryFiles(
 		join(ASSETS_DIR, "chains"),
 		join(agentHome, "chains"),
+		"chains",
 		force,
+		manifest,
 	);
 	const support = copyDirectoryFiles(
 		join(ASSETS_DIR, "support"),
 		join(agentHome, "gentle-ai", "support"),
+		"gentle-ai/support",
 		force,
+		manifest,
 	);
+	mkdirSync(dirname(manifestPath), { recursive: true });
+	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 	return {
 		agents: agents.copied,
 		chains: chains.copied,

@@ -107,9 +107,9 @@ For skill-shaped requests, do not treat injected `<available_skills>` as complet
 
 ## 4R Review Triggers
 
-`extensions/gentle-ai.ts` gates git/gh `bash`: pre-commit/pre-push only suggest `review-readability`; pre-pr blocks on hot auth/update/security/payments paths or over 400 changed lines and requires `review-risk`, `review-resilience`, `review-readability`, `review-reliability`; post-SDD design/apply uses `gentle-ai-judgment-day`.
+Route objectively trivial diffs to zero lenses. Route ordinary or ambiguous executable/configuration diffs to standard review with exactly one dominant lens: `review-risk`, `review-resilience`, `review-reliability`, or `review-readability` fallback. Exactly 400 changed lines remains standard; 401 changed lines or a non-trivial hot path runs full 4R in stable risk, resilience, readability, reliability order.
 
-When blocked, run `4r-review` or all four review agents before retrying.
+Pre-commit and pre-push never run full 4R. Review advice never blocks a command. Dangerous-command confirmation remains authoritative. Post-SDD design/apply remains the separate `gentle-ai-judgment-day` path.
 
 ### Review Execution Contract
 

@@ -10,25 +10,14 @@ function read(relPath: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Named clause groups (frozen, explicit arrays — no positional slicing).
-//
-// These encode the exhaustive first-pass loop, the persisted findings-ledger
-// schema, the artifact-store persistence branches, and the scoped re-review
-// contract defined in
-// openspec/changes/port-review-ledger-contract/{spec,design}.md, ported
-// near-verbatim from gentle-ai's
-// internal/assets/skills/_shared/review-ledger-contract.md.
-//
-// Every clause is chosen so it does NOT already exist in any unmodified Pi
-// asset (verified against the pre-change repo state) — this keeps the first
-// run of this suite a true RED before any asset is edited.
+// Named clause groups are explicit so parity cannot depend on positional
+// slicing or accidental prose overlap.
 // ---------------------------------------------------------------------------
 
-const exhaustiveFirstPassClauses = Object.freeze([
-	"Loop until dry: sweep the diff repeatedly until N consecutive sweeps yield zero new findings",
-	"Default N = 2 consecutive dry sweeps",
-	"R2 Readability MAY use N = 1",
-	"Hard ceiling: 4 sweeps regardless of N",
+const precisionLimitClauses = Object.freeze([
+	"Standard review runs exactly one complete sweep.",
+	"Full 4R runs at most two complete sweeps per lens.",
+	"Every finding MUST include concrete evidence of user impact; speculative findings are rejected.",
 ]);
 
 // Ledger schema fields. Full enum strings, not truncated prefixes: a prefix
@@ -39,9 +28,18 @@ const ledgerSchemaClauses = Object.freeze([
 	"`lens` | risk \\| readability \\| reliability \\| resilience \\| judgment-day |",
 	"`location` | `path/to/file.ext:line` or `:start-end`",
 	"`severity` | BLOCKER \\| CRITICAL \\| WARNING \\| SUGGESTION |",
-	"`status` | open \\| fixed \\| verified \\| wont-fix \\| info |",
+	"`status` | open \\| refuted \\| fixed \\| verified \\| wont-fix \\| info |",
 	"`evidence` | why it matters |",
 	"persist an empty ledger record rather than skip persistence",
+]);
+
+const terminalRowsClauses = Object.freeze([
+	"`refuted` is terminal and MUST NOT be reopened by later rounds.",
+	"WARNING and SUGGESTION rows are recorded once with status `info` and MUST NOT schedule fixes.",
+]);
+
+const judgmentDayPrecisionClauses = Object.freeze([
+	"Each Judgment Day judge runs exactly one complete blind sweep.",
 ]);
 
 // Persistence branches on the artifact store.
@@ -63,12 +61,36 @@ const ledgerPersistenceClauses = Object.freeze([
 	"If the engram upsert fails or the memory tool is unavailable, fall back to keeping the ledger inline in the response and explicitly report the degradation — never continue as if persistence succeeded.",
 ]);
 
-// Scoped re-review contract.
 const scopedReReviewClauses = Object.freeze([
-	"MUST verify each ledger finding's resolution and MUST review only fix-touched lines",
-	"MUST NOT re-read the full original diff",
-	"MUST be logged with status `info` as a first-pass quality signal",
-	"MUST NOT by itself trigger another full round",
+	"Re-review receives only the authoritative ledger and the fix diff.",
+	"Re-review assesses affected ledger rows and regressions introduced by the fix.",
+]);
+
+const actorCountClauses = Object.freeze([
+	"When no surviving BLOCKER/CRITICAL candidates exist, refutation launches zero actors.",
+	"Standard review launches exactly one non-parallel general refuter.",
+	"Full 4R launches exactly three parallel refuters: correctness, impact/exploitability, and reproducibility.",
+	"Every active refuter receives the complete merged BLOCKER/CRITICAL candidate list.",
+	"Per-finding refuter tasks and replacement refuters are forbidden.",
+]);
+
+const modeSpecificVotingClauses = Object.freeze([
+	"Refuter outputs are keyed by finding ID.",
+	"In standard review, the general refuter's single `refuted` verdict terminally refutes only that finding.",
+	"In full 4R, at least two of three valid `refuted` verdicts terminally refute only that finding.",
+	"`stands`, unknown, duplicate, malformed, omitted, or missing verdicts preserve the finding.",
+]);
+
+const roundLimitClauses = Object.freeze([
+	"Only surviving BLOCKER/CRITICAL rows MAY schedule a fix round.",
+	"At most two scoped fix/re-review rounds may run.",
+	"Severe rows surviving round two MUST escalate; a third round MUST NOT run.",
+]);
+
+const judgmentDayClauses = Object.freeze([
+	"Judgment Day launches exactly two blind judges in parallel and zero refuters.",
+	"Judgment Day applies the same two-round limit to surviving BLOCKER/CRITICAL rows.",
+	"Judgment Day WARNING and SUGGESTION rows remain `info` and MUST NOT schedule fixes.",
 ]);
 
 // Pi is subagent-primary ONLY (real review-*/jd-* subagents); there is no
@@ -80,31 +102,36 @@ const subagentExecutionModeClause =
 const fixExecutionModeClause =
 	"Fix execution-mode: jd-fix-agent applies only confirmed ledger findings and hands control back to the orchestrator, which runs the scoped re-judge.";
 
-// requiredJudgePromptClauses is the subset that belongs INSIDE the fenced
-// Judge Prompt template itself (JD-013): the exhaustive first-pass loop, the
-// findings-ledger schema, and the ledger-persistence branches. The scoped
-// re-review contract governs the re-judge round that follows the fix agent,
-// not the judge's own prompt, so it is excluded here.
-//
-// Authored as its OWN explicit named array, NOT derived by positional slicing
-// off requiredJudgeClauses — canonical gentle-ai's
-// `requiredJudgePromptClauses = requiredLedgerClauses[:len(requiredLedgerClauses)-4]`
-// is index-fragile: reordering the source array silently changes which
-// clauses the fence check covers. This port names each sub-array explicitly
-// so no clause's membership depends on array position.
 const requiredJudgePromptClauses = Object.freeze([
-	...exhaustiveFirstPassClauses,
+	...judgmentDayPrecisionClauses,
 	...ledgerSchemaClauses,
+	...terminalRowsClauses,
 	...ledgerPersistenceClauses,
+	...judgmentDayClauses,
 ]);
 
-// requiredJudgeClauses is the full clause set asserted on every whole-file
-// judge surface: the four review-* lenses, jd-judge-a, jd-judge-b, and the
-// judgment-day SKILL.md "Ledger and Re-Judge Contract" section.
-const requiredJudgeClauses = Object.freeze([
+const requiredReviewLensClauses = Object.freeze([
+	...precisionLimitClauses,
+	...ledgerSchemaClauses,
+	...terminalRowsClauses,
+	...ledgerPersistenceClauses,
+	...scopedReReviewClauses,
+	subagentExecutionModeClause,
+]);
+
+const requiredJudgmentDayClauses = Object.freeze([
 	...requiredJudgePromptClauses,
 	...scopedReReviewClauses,
 	subagentExecutionModeClause,
+]);
+
+const requiredCanonicalClauses = Object.freeze([
+	...requiredReviewLensClauses,
+	...judgmentDayPrecisionClauses,
+	...actorCountClauses,
+	...modeSpecificVotingClauses,
+	...roundLimitClauses,
+	...judgmentDayClauses,
 ]);
 
 // requiredFixAgentClauses are the fix-specific clauses jd-fix-agent.md (and
@@ -117,6 +144,7 @@ const requiredFixAgentClauses = Object.freeze([
 	"Read the ledger entries the orchestrator confirmed and passed in the delegate prompt",
 	"set that entry's `status` to `fixed`",
 	"Never add new ledger rows: if fixing surfaces a new problem, report it back to the orchestrator instead of fixing it or logging it yourself",
+	"Only surviving BLOCKER/CRITICAL rows may be fixed; WARNING and SUGGESTION remain `info`.",
 	fixExecutionModeClause,
 ]);
 
@@ -126,7 +154,7 @@ const requiredFixAgentClauses = Object.freeze([
 // fix-agent surface alongside the fix clauses, these markers catch it
 // (JD-001/JD-011 regression guard).
 const judgeOnlyMarkers = Object.freeze([
-	"**Exhaustive first pass.**",
+	"**Precision limits.**",
 	"Emit a findings ledger with this schema for every entry",
 	subagentExecutionModeClause,
 ]);
@@ -137,7 +165,7 @@ const judgeOnlyMarkers = Object.freeze([
 // entries to `fixed` even though it never emits new ledger rows (JD-004).
 const requiredEnumFragments = Object.freeze([
 	"BLOCKER \\| CRITICAL \\| WARNING \\| SUGGESTION",
-	"open \\| fixed \\| verified \\| wont-fix \\| info",
+	"open \\| refuted \\| fixed \\| verified \\| wont-fix \\| info",
 	"risk \\| readability \\| reliability \\| resilience \\| judgment-day",
 ]);
 
@@ -145,11 +173,14 @@ const requiredEnumFragments = Object.freeze([
 // Surfaces
 // ---------------------------------------------------------------------------
 
-const judgeWholeFileSurfaces = Object.freeze([
+const reviewLensSurfaces = Object.freeze([
 	"assets/agents/review-risk.md",
 	"assets/agents/review-readability.md",
 	"assets/agents/review-reliability.md",
 	"assets/agents/review-resilience.md",
+]);
+
+const judgmentDaySurfaces = Object.freeze([
 	"assets/agents/jd-judge-a.md",
 	"assets/agents/jd-judge-b.md",
 	"skills/judgment-day/SKILL.md",
@@ -157,7 +188,11 @@ const judgeWholeFileSurfaces = Object.freeze([
 
 const fixAgentSurface = "assets/agents/jd-fix-agent.md";
 
-const enumFragmentSurfaces = Object.freeze([...judgeWholeFileSurfaces, fixAgentSurface]);
+const enumFragmentSurfaces = Object.freeze([
+	...reviewLensSurfaces,
+	...judgmentDaySurfaces,
+	fixAgentSurface,
+]);
 
 const promptsAndFormatsPath = "skills/judgment-day/references/prompts-and-formats.md";
 
@@ -262,9 +297,24 @@ test("extractFencedBlockAfterHeading extracts the correct block for a unique hea
 
 test("canonical review-ledger-contract source carries the full judge clause set", () => {
 	const content = read(canonicalPath);
-	assertContainsAll(canonicalPath, content, requiredJudgeClauses);
+	assertContainsAll(canonicalPath, content, requiredCanonicalClauses);
 	assertContainsAll(canonicalPath, content, requiredEnumFragments);
 });
+
+for (const [scenario, clauses] of Object.entries({
+	"Precision limits": precisionLimitClauses,
+	"Terminal rows": terminalRowsClauses,
+	"Persistence fallback": ledgerPersistenceClauses,
+	"Actor counts": actorCountClauses,
+	"Mode-specific voting and fail-closed handling": modeSpecificVotingClauses,
+	"Scoped re-review": scopedReReviewClauses,
+	"Round limit": roundLimitClauses,
+	"Judgment Day exception": judgmentDayClauses,
+})) {
+	test(`canonical parity: ${scenario}`, () => {
+		assertContainsAll(canonicalPath, read(canonicalPath), clauses);
+	});
+}
 
 test("canonical source carries the fix-agent clause set for reference", () => {
 	const content = read(canonicalPath);
@@ -277,12 +327,49 @@ test("canonical source carries the fix-agent clause set for reference", () => {
 	]);
 });
 
-for (const surface of judgeWholeFileSurfaces) {
-	test(`${surface} carries the full judge clause set`, () => {
+for (const surface of reviewLensSurfaces) {
+	test(`${surface} carries the review-lens parity clauses`, () => {
 		const content = read(surface);
-		assertContainsAll(surface, content, requiredJudgeClauses);
+		assertContainsAll(surface, content, requiredReviewLensClauses);
+	});
+
+	test(`${surface} does not absorb parent or Judgment Day orchestration`, () => {
+		const content = read(surface);
+		assertContainsNone(surface, content, [
+			...actorCountClauses,
+			...modeSpecificVotingClauses,
+			...roundLimitClauses,
+			...judgmentDayClauses,
+			"Loop until dry",
+		]);
 	});
 }
+
+for (const surface of judgmentDaySurfaces) {
+	test(`${surface} carries the Judgment Day parity clauses`, () => {
+		const content = read(surface);
+		assertContainsAll(surface, content, requiredJudgmentDayClauses);
+	});
+
+	test(`${surface} does not absorb 4R refuter voting`, () => {
+		assertContainsNone(surface, read(surface), [
+			...actorCountClauses,
+			...modeSpecificVotingClauses,
+			"Loop until dry",
+		]);
+	});
+}
+
+test("canonical parent clauses are unique and cannot drift into duplicate policies", () => {
+	const content = read(canonicalPath);
+	for (const clause of [...actorCountClauses, ...modeSpecificVotingClauses, ...roundLimitClauses]) {
+		assert.equal(
+			content.split(clause).length - 1,
+			1,
+			`${canonicalPath} must contain exactly one parent clause: ${JSON.stringify(clause)}`,
+		);
+	}
+});
 
 for (const surface of enumFragmentSurfaces) {
 	test(`${surface} carries complete, untruncated enum rows`, () => {
@@ -342,16 +429,48 @@ test(`${orchestratorPath} Review Execution Contract carries persistence branches
 	]);
 });
 
-test(`${chainPath} replaces the four "No findings." lines with the canonical empty-ledger-record clause`, () => {
+test(`${orchestratorPath} owns all dynamic batching, voting, persistence, and convergence clauses`, () => {
+	const content = read(orchestratorPath) + read("assets/orchestrator-delegation.md");
+	assertContainsAll(orchestratorPath, content, [
+		...precisionLimitClauses,
+		...ledgerSchemaClauses,
+		...terminalRowsClauses,
+		...ledgerPersistenceClauses,
+		...actorCountClauses,
+		...modeSpecificVotingClauses,
+		...scopedReReviewClauses,
+		...roundLimitClauses,
+		...judgmentDayPrecisionClauses,
+		...judgmentDayClauses,
+	]);
+});
+
+test(`${chainPath} is lens-only and returns four complete discovery reports`, () => {
 	const content = read(chainPath);
 	assert.ok(
 		!content.includes("say exactly: `No findings.`"),
 		`${chainPath} must not carry the old "say exactly: No findings." wording`,
 	);
-	const occurrences = content.split("persist an empty ledger record rather than skip persistence").length - 1;
+	const occurrences = content.split("return an empty ledger record rather than omit the report").length - 1;
 	assert.equal(
 		occurrences,
 		4,
-		`${chainPath} must carry the canonical empty-ledger-record clause once per lens section (risk, readability, reliability, resilience)`,
+		`${chainPath} must return one report per lens, including empty ledgers`,
 	);
+	for (const lens of ["review-risk", "review-readability", "review-reliability", "review-resilience"]) {
+		assert.equal(
+			content.split(`## ${lens}`).length - 1,
+			1,
+			`${chainPath} must run ${lens} exactly once`,
+		);
+	}
+	assertContainsNone(chainPath, content, [
+		...actorCountClauses,
+		...modeSpecificVotingClauses,
+		...roundLimitClauses,
+		...judgmentDayClauses,
+		"review-refuter",
+		"fix/re-review",
+		"Ledger persistence",
+	]);
 });

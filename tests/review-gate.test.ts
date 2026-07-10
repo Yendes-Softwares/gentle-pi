@@ -1,8 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
+import {
+	FULL_4R_LENSES,
+	REVIEW_LENS,
+	REVIEW_ROUTE,
+	type ReviewPlan,
+} from "../lib/review-triggers.ts";
 
-const { classifyReviewEvent, parseNumstat } = __testing;
+const {
+	applyReviewAdvice,
+	classifyReviewEvent,
+	collectReviewDiffForCommand,
+	parseNumstat,
+	reviewAdviceMessage,
+} = __testing;
+
+function plan(overrides: Partial<ReviewPlan> = {}): ReviewPlan {
+	return {
+		route: REVIEW_ROUTE.STANDARD,
+		lenses: [REVIEW_LENS.READABILITY],
+		reason: "ordinary non-trivial diff",
+		...overrides,
+	};
+}
 
 // ---------------------------------------------------------------------------
 // classifyReviewEvent — command → TriggerEvent classification
@@ -47,6 +68,27 @@ test("classifyReviewEvent: git status → null", () => {
 test("classifyReviewEvent: git log → null", () => {
 	assert.equal(classifyReviewEvent("git log --oneline -5"), null);
 });
+
+for (const expected of [
+	{ command: "git -C /selected/commit-repo commit -m fix", event: "pre-commit", cwd: "/selected/commit-repo" },
+	{ command: "git -C /selected/push-repo push origin main", event: "pre-push", cwd: "/selected/push-repo" },
+] as const) {
+	test(`${expected.event} evidence collection propagates the git -C repository`, () => {
+		const expectedDiff = { changedPaths: ["src/selected.ts"], changedLines: 3 };
+		const collection = collectReviewDiffForCommand(
+			expected.command,
+			"/session/repo",
+			(event, cwd) => {
+				assert.deepEqual({ event, cwd }, { event: expected.event, cwd: expected.cwd });
+				return expectedDiff;
+			},
+		);
+		assert.deepEqual(collection, {
+			event: expected.event,
+			diff: expectedDiff,
+		});
+	});
+}
 
 // ---------------------------------------------------------------------------
 // parseNumstat — parses git diff --numstat output
@@ -99,4 +141,54 @@ test("parseNumstat: empty numstat output returns zero diff object, not null", ()
 	assert.ok(result !== null, "parseNumstat should return a ChangedDiff object, not null");
 	assert.equal(result.changedLines, 0);
 	assert.deepEqual(result.changedPaths, []);
+});
+
+test("parseNumstat ignores malformed rows without inventing changed paths", () => {
+	const result = parseNumstat("not-numstat\n3\tbroken\n2\t1\tsrc/real.ts\n");
+	assert.equal(result.changedLines, 3);
+	assert.deepEqual(result.changedPaths, ["src/real.ts"]);
+});
+
+test("review advice describes trivial, standard, and full routes without receipts", () => {
+	const trivial = reviewAdviceMessage(
+		plan({ route: REVIEW_ROUTE.TRIVIAL, lenses: [], reason: "objective triviality proven" }),
+		"pre-pr",
+	);
+	assert.match(trivial, /trivial/);
+	assert.match(trivial, /zero review lenses/);
+
+	const standard = reviewAdviceMessage(plan(), "pre-commit");
+	assert.match(standard, /standard/);
+	assert.match(standard, /review-readability/);
+
+	const full = reviewAdviceMessage(
+		plan({ route: REVIEW_ROUTE.FULL_4R, lenses: FULL_4R_LENSES }),
+		"pre-pr",
+	);
+	assert.match(full, /full-4R/);
+	for (const lens of FULL_4R_LENSES) assert.match(full, new RegExp(lens));
+	assert.doesNotMatch(`${trivial}\n${standard}\n${full}`, /receipt|retry|complete review/i);
+});
+
+test("applyReviewAdvice notifies but never blocks command execution", () => {
+	const notifications: Array<{ message: string; level: string }> = [];
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify(message: string, level: string) {
+				notifications.push({ message, level });
+			},
+		},
+	};
+
+	for (const reviewPlan of [
+		plan({ route: REVIEW_ROUTE.TRIVIAL, lenses: [] }),
+		plan(),
+		plan({ route: REVIEW_ROUTE.FULL_4R, lenses: FULL_4R_LENSES }),
+	]) {
+		assert.equal(applyReviewAdvice(reviewPlan, "pre-pr", ctx), undefined);
+	}
+
+	assert.equal(notifications.length, 3);
+	assert.ok(notifications.every(({ level }) => level === "info"));
 });

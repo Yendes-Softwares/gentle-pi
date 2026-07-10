@@ -1,382 +1,309 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	DEFAULT_RULE_SET,
-	KNOWN_AGENTS,
+	EVENT_CEILING,
+	FULL_4R_LENSES,
 	LARGE_CHANGED_LINE_THRESHOLD,
-	evaluateEvent,
-	matchPathGlobs,
-	validateTriggerRuleSet,
-	type ChangedDiff,
-	type TriggerBinding,
-	type TriggerRuleSet,
+	REVIEW_LENS,
+	REVIEW_ROUTE,
+	TRIVIALITY,
+	buildDiffEvidence,
+	classifyReviewRoute,
+	type DiffEvidence,
+	type TriggerEvent,
 } from "../lib/review-triggers.ts";
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — accepts DEFAULT_RULE_SET
-// ---------------------------------------------------------------------------
-
-test("validateTriggerRuleSet: DEFAULT_RULE_SET is valid", () => {
-	assert.doesNotThrow(() => validateTriggerRuleSet(DEFAULT_RULE_SET));
-});
-
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects negative minDiffLines
-// ---------------------------------------------------------------------------
-
-test("validateTriggerRuleSet: rejects negative minDiffLines", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-pr",
-				when: { minDiffLines: -1 },
-				run: ["review-risk"],
-				mode: "strong",
-				reason: "test",
-			},
-		],
+function evidence(overrides: Partial<DiffEvidence> = {}): DiffEvidence {
+	return {
+		event: "pre-pr",
+		changedLines: 20,
+		triviality: TRIVIALITY.NON_TRIVIAL,
+		evidenceComplete: true,
+		executableChanged: true,
+		configurationChanged: false,
+		hotPathChanged: false,
+		riskSignal: false,
+		resilienceSignal: false,
+		reliabilitySignal: false,
+		...overrides,
 	};
-	assert.throws(() => validateTriggerRuleSet(bad), /MinDiffLines/);
+}
+
+test("routing constants expose stable runtime values", () => {
+	assert.deepEqual(REVIEW_ROUTE, {
+		TRIVIAL: "trivial",
+		STANDARD: "standard",
+		FULL_4R: "full-4R",
+	});
+	assert.deepEqual(EVENT_CEILING, {
+		STANDARD: "standard",
+		FULL_4R: "full-4R",
+	});
+	assert.equal(LARGE_CHANGED_LINE_THRESHOLD, 400);
+	assert.deepEqual(FULL_4R_LENSES, [
+		REVIEW_LENS.RISK,
+		REVIEW_LENS.RESILIENCE,
+		REVIEW_LENS.READABILITY,
+		REVIEW_LENS.RELIABILITY,
+	]);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects 4R fan-out on pre-commit/pre-push with always
-// ---------------------------------------------------------------------------
-
-test("validateTriggerRuleSet: rejects 4R fan-out on pre-commit with always:true", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-commit",
-				when: { always: true },
-				run: [
-					"review-risk",
-					"review-readability",
-					"review-reliability",
-					"review-resilience",
-				],
-				mode: "strong",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /4R fan-out|spec G/i);
+test("objectively trivial documentation diff requests zero lenses", () => {
+	const plan = classifyReviewRoute(
+		evidence({
+			changedLines: 8,
+			triviality: TRIVIALITY.PROVEN,
+			executableChanged: false,
+		}),
+	);
+	assert.equal(plan.route, REVIEW_ROUTE.TRIVIAL);
+	assert.deepEqual(plan.lenses, []);
 });
 
-test("validateTriggerRuleSet: rejects 4R fan-out on pre-push with always:true", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-push",
-				when: { always: true },
-				run: [
-					"review-risk",
-					"review-readability",
-					"review-reliability",
-					"review-resilience",
-				],
-				mode: "strong",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /4R fan-out|spec G/i);
+test("objectively trivial hot-path documentation remains trivial", () => {
+	const plan = classifyReviewRoute(
+		evidence({
+			triviality: TRIVIALITY.PROVEN,
+			executableChanged: false,
+			hotPathChanged: true,
+		}),
+	);
+	assert.equal(plan.route, REVIEW_ROUTE.TRIVIAL);
+	assert.deepEqual(plan.lenses, []);
 });
 
-test("validateTriggerRuleSet: allows 4R fan-out on pre-pr (not everyday event)", () => {
-	const ok: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-pr",
-				when: { minDiffLines: 400, combine: "or" },
-				run: [
-					"review-risk",
-					"review-readability",
-					"review-reliability",
-					"review-resilience",
-				],
-				mode: "strong",
-				reason: "test",
-			},
-		],
-	};
-	assert.doesNotThrow(() => validateTriggerRuleSet(ok));
+for (const [name, overrides] of [
+	["incomplete evidence", { evidenceComplete: false }],
+	["executable ambiguity", { triviality: TRIVIALITY.UNPROVEN, executableChanged: true }],
+	[
+		"configuration ambiguity",
+		{
+			triviality: TRIVIALITY.PROVEN,
+			executableChanged: false,
+			configurationChanged: true,
+		},
+	],
+] satisfies Array<[string, Partial<DiffEvidence>]>) {
+	test(`${name} fails conservatively to one standard lens`, () => {
+		const plan = classifyReviewRoute(evidence(overrides));
+		assert.equal(plan.route, REVIEW_ROUTE.STANDARD);
+		assert.deepEqual(plan.lenses, [REVIEW_LENS.READABILITY]);
+	});
+}
+
+test("standard routing selects exactly one dominant lens by fixed precedence", () => {
+	assert.deepEqual(
+		classifyReviewRoute(
+			evidence({ riskSignal: true, resilienceSignal: true, reliabilitySignal: true }),
+		).lenses,
+		[REVIEW_LENS.RISK],
+	);
+	assert.deepEqual(
+		classifyReviewRoute(
+			evidence({ resilienceSignal: true, reliabilitySignal: true }),
+		).lenses,
+		[REVIEW_LENS.RESILIENCE],
+	);
+	assert.deepEqual(
+		classifyReviewRoute(evidence({ reliabilitySignal: true })).lenses,
+		[REVIEW_LENS.RELIABILITY],
+	);
+	assert.deepEqual(classifyReviewRoute(evidence()).lenses, [REVIEW_LENS.READABILITY]);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects unknown agent
-// ---------------------------------------------------------------------------
+for (const changedLines of [399, 400]) {
+	test(`${changedLines} ordinary changed lines remain standard`, () => {
+		const plan = classifyReviewRoute(evidence({ changedLines }));
+		assert.equal(plan.route, REVIEW_ROUTE.STANDARD);
+		assert.equal(plan.lenses.length, 1);
+	});
+}
 
-test("validateTriggerRuleSet: rejects unknown agent in run", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-commit",
-				when: { always: true },
-				run: ["not-a-real-agent"],
-				mode: "advisory",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /unknown.*agent|agent.*unknown/i);
+test("401 ordinary changed lines route to full 4R in stable order", () => {
+	const plan = classifyReviewRoute(evidence({ changedLines: 401 }));
+	assert.equal(plan.route, REVIEW_ROUTE.FULL_4R);
+	assert.deepEqual(plan.lenses, FULL_4R_LENSES);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects empty run
-// ---------------------------------------------------------------------------
-
-test("validateTriggerRuleSet: rejects empty run array", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-commit",
-				when: { always: true },
-				run: [],
-				mode: "advisory",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /run.*empty|empty.*run/i);
+test("non-trivial hot path routes to full 4R regardless of size", () => {
+	const plan = classifyReviewRoute(evidence({ changedLines: 1, hotPathChanged: true }));
+	assert.equal(plan.route, REVIEW_ROUTE.FULL_4R);
+	assert.deepEqual(plan.lenses, FULL_4R_LENSES);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects phases on non-post-sdd-phase event
-// ---------------------------------------------------------------------------
+for (const event of ["pre-commit", "pre-push"] satisfies TriggerEvent[]) {
+	test(`${event} caps a large hot-path diff at one standard lens`, () => {
+		const plan = classifyReviewRoute(
+			evidence({ event, changedLines: 401, hotPathChanged: true, riskSignal: true }),
+		);
+		assert.equal(plan.route, REVIEW_ROUTE.STANDARD);
+		assert.deepEqual(plan.lenses, [REVIEW_LENS.RISK]);
+	});
+}
 
-test("validateTriggerRuleSet: rejects phases field on pre-commit event", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-commit",
-				when: { phases: ["design"] },
-				run: ["judgment-day"],
-				mode: "strong",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /phases.*post-sdd-phase|post-sdd-phase.*phases/i);
+test("runtime evidence proves documentation-only changes trivial", () => {
+	const result = buildDiffEvidence("pre-pr", {
+		changedPaths: ["README.md", "docs/review-routing.md", "docs/guides/routing.mdx"],
+		changedLines: 14,
+	});
+	assert.equal(result.triviality, TRIVIALITY.PROVEN);
+	assert.equal(result.evidenceComplete, true);
+	assert.equal(result.executableChanged, false);
+	assert.equal(result.configurationChanged, false);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects empty-slice When
-// ---------------------------------------------------------------------------
+test("runtime evidence treats executable and configuration content as unproven", () => {
+	const source = buildDiffEvidence("pre-pr", {
+		changedPaths: ["src/review.ts"],
+		changedLines: 4,
+	});
+	assert.equal(source.triviality, TRIVIALITY.UNPROVEN);
+	assert.equal(source.executableChanged, true);
 
-test("validateTriggerRuleSet: rejects When with no conditions set", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-commit",
-				when: {},
-				run: ["review-readability"],
-				mode: "advisory",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /at least one condition/i);
+	const config = buildDiffEvidence("pre-pr", {
+		changedPaths: ["config/review.yaml"],
+		changedLines: 2,
+	});
+	assert.equal(config.triviality, TRIVIALITY.UNPROVEN);
+	assert.equal(config.configurationChanged, true);
 });
 
-// ---------------------------------------------------------------------------
-// validateTriggerRuleSet — rejects invalid combine value
-// ---------------------------------------------------------------------------
+test("documentation-like executable and configuration paths remain non-trivial", () => {
+	for (const expected of [
+		{ path: "requirements.txt", executableChanged: false, configurationChanged: true },
+		{ path: "CMakeLists.txt", executableChanged: false, configurationChanged: true },
+		{ path: "assets/agents/review-risk.md", executableChanged: true, configurationChanged: false },
+		{ path: "skills/gentle-ai/SKILL.md", executableChanged: true, configurationChanged: false },
+		{ path: "src/pages/dashboard.mdx", executableChanged: true, configurationChanged: false },
+		{ path: "README.sh", executableChanged: true, configurationChanged: false },
+	] as const) {
+		const result = buildDiffEvidence("pre-pr", {
+			changedPaths: [expected.path],
+			changedLines: 4,
+		});
 
-test("validateTriggerRuleSet: rejects invalid combine value", () => {
-	const bad: TriggerRuleSet = {
-		bindings: [
-			{
-				on: "pre-pr",
-				when: { pathGlobs: ["**/auth/**"], combine: "xor" as "" },
-				run: ["review-risk"],
-				mode: "strong",
-				reason: "test",
-			},
-		],
-	};
-	assert.throws(() => validateTriggerRuleSet(bad), /combine/i);
-});
-
-// ---------------------------------------------------------------------------
-// KNOWN_AGENTS — closed set coverage
-// ---------------------------------------------------------------------------
-
-test("KNOWN_AGENTS contains all 4R agents and SDD phases", () => {
-	const required = [
-		"review-risk",
-		"review-readability",
-		"review-reliability",
-		"review-resilience",
-		"judgment-day",
-		"sdd-explore",
-		"sdd-propose",
-		"sdd-spec",
-		"sdd-design",
-		"sdd-tasks",
-		"sdd-apply",
-		"sdd-verify",
-		"sdd-archive",
-	];
-	for (const agent of required) {
-		assert.ok(KNOWN_AGENTS.includes(agent), `Expected KNOWN_AGENTS to include "${agent}"`);
+		assert.equal(result.triviality, TRIVIALITY.UNPROVEN, expected.path);
+		assert.equal(result.executableChanged, expected.executableChanged, expected.path);
+		assert.equal(result.configurationChanged, expected.configurationChanged, expected.path);
+		assert.equal(classifyReviewRoute(result).route, REVIEW_ROUTE.STANDARD, expected.path);
 	}
 });
 
-// ---------------------------------------------------------------------------
-// LARGE_CHANGED_LINE_THRESHOLD
-// ---------------------------------------------------------------------------
+test("runtime evidence identifies hot paths and dominant-risk signals", () => {
+	const hot = buildDiffEvidence("pre-pr", {
+		changedPaths: ["src/auth/session.ts"],
+		changedLines: 5,
+	});
+	assert.equal(hot.hotPathChanged, true);
+	assert.equal(hot.riskSignal, true);
 
-test("LARGE_CHANGED_LINE_THRESHOLD is 400", () => {
-	assert.equal(LARGE_CHANGED_LINE_THRESHOLD, 400);
+	const resilient = buildDiffEvidence("pre-pr", {
+		changedPaths: ["infra/deploy/rollback.ts"],
+		changedLines: 5,
+	});
+	assert.equal(resilient.resilienceSignal, true);
 });
 
-// ---------------------------------------------------------------------------
-// matchPathGlobs — positive cases
-// ---------------------------------------------------------------------------
+test("sensitive configuration basenames select the risk lens at pre-commit", () => {
+	for (const path of [
+		".env",
+		"services/api/.env.production",
+		"config/environment.json",
+		"config/credentials.json",
+		"config/secrets.yaml",
+		"config/tokens.toml",
+		"config/permissions.json",
+		"config/policy.yaml",
+		"config/security.ini",
+	]) {
+		const evidence = buildDiffEvidence("pre-commit", {
+			changedPaths: [path],
+			changedLines: 3,
+		});
+		const plan = classifyReviewRoute(evidence);
 
-test("matchPathGlobs: src/auth/login.ts matches **/auth/**", () => {
-	assert.ok(matchPathGlobs(["src/auth/login.ts"], ["**/auth/**"]));
+		assert.equal(evidence.configurationChanged, true, path);
+		assert.equal(evidence.riskSignal, true, path);
+		assert.equal(plan.route, REVIEW_ROUTE.STANDARD, path);
+		assert.deepEqual(plan.lenses, [REVIEW_LENS.RISK], path);
+	}
 });
 
-test("matchPathGlobs: src/security/handler.ts matches **/security/**", () => {
-	assert.ok(matchPathGlobs(["src/security/handler.ts"], ["**/security/**"]));
+test("ordinary files containing sensitive-looking substrings do not select risk", () => {
+	for (const path of [
+		"config/tokenizer.json",
+		"config/political-map.json",
+		"config/secret-santa.yaml",
+		"config/security-notes.yaml",
+		"docs/policy.md",
+		"src/environment.ts",
+	]) {
+		const evidence = buildDiffEvidence("pre-commit", {
+			changedPaths: [path],
+			changedLines: 3,
+		});
+		const plan = classifyReviewRoute(evidence);
+
+		assert.equal(evidence.riskSignal, false, path);
+		assert.deepEqual(
+			plan.lenses,
+			path === "docs/policy.md" ? [] : [REVIEW_LENS.READABILITY],
+			path,
+		);
+	}
 });
 
-test("matchPathGlobs: src/payments/gateway.ts matches **/payments/**", () => {
-	assert.ok(matchPathGlobs(["src/payments/gateway.ts"], ["**/payments/**"]));
+test("incomplete runtime collection remains standard instead of trivial", () => {
+	const plan = classifyReviewRoute(
+		buildDiffEvidence(
+			"pre-pr",
+			{ changedPaths: [], changedLines: 0 },
+			false,
+		),
+	);
+	assert.equal(plan.route, REVIEW_ROUTE.STANDARD);
+	assert.deepEqual(plan.lenses, [REVIEW_LENS.READABILITY]);
 });
 
-test("matchPathGlobs: src/update/updater.ts matches **/update/**", () => {
-	assert.ok(matchPathGlobs(["src/update/updater.ts"], ["**/update/**"]));
+test("incomplete triviality evidence cannot suppress a known 401-line full route", () => {
+	const plan = classifyReviewRoute(
+		evidence({
+			changedLines: 401,
+			triviality: TRIVIALITY.UNPROVEN,
+			evidenceComplete: false,
+		}),
+	);
+	assert.equal(plan.route, REVIEW_ROUTE.FULL_4R);
+	assert.deepEqual(plan.lenses, FULL_4R_LENSES);
 });
 
-test("matchPathGlobs: deep path matches **/auth/**", () => {
-	assert.ok(matchPathGlobs(["a/b/c/auth/deep/file.ts"], ["**/auth/**"]));
+test("stable full-lens order is independent of standard-risk signals", () => {
+	for (const event of ["pre-pr", "on-ci", "on-schedule"] satisfies TriggerEvent[]) {
+		const plan = classifyReviewRoute(
+			evidence({
+				event,
+				changedLines: 401,
+				riskSignal: true,
+				resilienceSignal: true,
+				reliabilitySignal: true,
+			}),
+		);
+		assert.deepEqual(plan.lenses, [
+			REVIEW_LENS.RISK,
+			REVIEW_LENS.RESILIENCE,
+			REVIEW_LENS.READABILITY,
+			REVIEW_LENS.RELIABILITY,
+		]);
+	}
 });
 
-test("matchPathGlobs: mixed paths — only one matches — returns true", () => {
-	assert.ok(matchPathGlobs(["src/utils/helper.ts", "src/auth/middleware.ts"], ["**/auth/**"]));
-});
-
-// ---------------------------------------------------------------------------
-// matchPathGlobs — negative cases
-// ---------------------------------------------------------------------------
-
-test("matchPathGlobs: src/utils/helper.ts does NOT match **/auth/**", () => {
-	assert.equal(matchPathGlobs(["src/utils/helper.ts"], ["**/auth/**"]), false);
-});
-
-test("matchPathGlobs: empty paths returns false", () => {
-	assert.equal(matchPathGlobs([], ["**/auth/**"]), false);
-});
-
-test("matchPathGlobs: path without auth segment does not match auth glob", () => {
-	assert.equal(matchPathGlobs(["src/authutils/helper.ts"], ["**/auth/**"]), false);
-});
-
-// ---------------------------------------------------------------------------
-// matchPathGlobs — root-level directory matching (FIX 1: leading **/ zero segments)
-// ---------------------------------------------------------------------------
-
-test("matchPathGlobs: auth/login.ts (root-level) matches **/auth/**", () => {
-	assert.ok(matchPathGlobs(["auth/login.ts"], ["**/auth/**"]));
-});
-
-test("matchPathGlobs: payments/stripe.ts (root-level) matches **/payments/**", () => {
-	assert.ok(matchPathGlobs(["payments/stripe.ts"], ["**/payments/**"]));
-});
-
-test("matchPathGlobs: security/config.ts (root-level) matches **/security/**", () => {
-	assert.ok(matchPathGlobs(["security/config.ts"], ["**/security/**"]));
-});
-
-test("matchPathGlobs: authutils/helper.ts (root-level) does NOT match **/auth/** (segment boundary required)", () => {
-	assert.equal(matchPathGlobs(["authutils/helper.ts"], ["**/auth/**"]), false);
-});
-
-// ---------------------------------------------------------------------------
-// evaluateEvent — pre-commit: always fires advisory readability
-// ---------------------------------------------------------------------------
-
-test("evaluateEvent: pre-commit always fires advisory review-readability", () => {
-	const diff: ChangedDiff = { changedPaths: [], changedLines: 0 };
-	const result = evaluateEvent("pre-commit", diff);
-	assert.ok(result !== null, "Expected a result for pre-commit");
-	assert.equal(result!.mode, "advisory");
-	assert.ok(result!.run.includes("review-readability"));
-});
-
-test("evaluateEvent: pre-push always fires advisory review-readability", () => {
-	const diff: ChangedDiff = { changedPaths: [], changedLines: 0 };
-	const result = evaluateEvent("pre-push", diff);
-	assert.ok(result !== null, "Expected a result for pre-push");
-	assert.equal(result!.mode, "advisory");
-	assert.ok(result!.run.includes("review-readability"));
-});
-
-// ---------------------------------------------------------------------------
-// evaluateEvent — pre-pr: fires strong 4R when path matches hot globs
-// ---------------------------------------------------------------------------
-
-test("evaluateEvent: pre-pr fires strong 4R when auth path matches", () => {
-	const diff: ChangedDiff = {
-		changedPaths: ["src/auth/middleware.ts"],
-		changedLines: 10,
-	};
-	const result = evaluateEvent("pre-pr", diff);
-	assert.ok(result !== null, "Expected a result for pre-pr on auth path");
-	assert.equal(result!.mode, "strong");
-	assert.ok(result!.run.includes("review-risk"));
-	assert.ok(result!.run.includes("review-readability"));
-	assert.ok(result!.run.includes("review-reliability"));
-	assert.ok(result!.run.includes("review-resilience"));
-});
-
-// ---------------------------------------------------------------------------
-// evaluateEvent — pre-pr: fires strong 4R when changedLines >= 400
-// ---------------------------------------------------------------------------
-
-test("evaluateEvent: pre-pr fires strong 4R when changedLines >= 400", () => {
-	const diff: ChangedDiff = {
-		changedPaths: ["src/utils/helper.ts"],
-		changedLines: 400,
-	};
-	const result = evaluateEvent("pre-pr", diff);
-	assert.ok(result !== null, "Expected a result for pre-pr on large diff");
-	assert.equal(result!.mode, "strong");
-});
-
-test("evaluateEvent: pre-pr threshold boundary — 400 fires", () => {
-	const diff: ChangedDiff = { changedPaths: [], changedLines: 400 };
-	const result = evaluateEvent("pre-pr", diff);
-	assert.ok(result !== null, "Expected a result at boundary 400");
-});
-
-test("evaluateEvent: pre-pr threshold boundary — 399 does NOT fire", () => {
-	const diff: ChangedDiff = { changedPaths: [], changedLines: 399 };
-	const result = evaluateEvent("pre-pr", diff);
-	assert.equal(result, null, "Expected null at 399 with no hot paths");
-});
-
-// ---------------------------------------------------------------------------
-// evaluateEvent — pre-pr: does NOT fire when neither condition holds
-// ---------------------------------------------------------------------------
-
-test("evaluateEvent: pre-pr does NOT fire with 0 lines and no hot paths", () => {
-	const diff: ChangedDiff = {
-		changedPaths: ["src/utils/helper.ts"],
-		changedLines: 0,
-	};
-	const result = evaluateEvent("pre-pr", diff);
-	assert.equal(result, null);
-});
-
-test("evaluateEvent: pre-pr does NOT fire with 50 lines and no hot paths", () => {
-	const diff: ChangedDiff = {
-		changedPaths: ["src/components/Button.tsx"],
-		changedLines: 50,
-	};
-	const result = evaluateEvent("pre-pr", diff);
-	assert.equal(result, null);
+test("runtime collection keeps a large documentation-only hot-path edit trivial", () => {
+	const plan = classifyReviewRoute(
+		buildDiffEvidence("pre-pr", {
+			changedPaths: ["docs/auth/recovery.md"],
+			changedLines: 900,
+		}),
+	);
+	assert.equal(plan.route, REVIEW_ROUTE.TRIVIAL);
+	assert.deepEqual(plan.lenses, []);
 });

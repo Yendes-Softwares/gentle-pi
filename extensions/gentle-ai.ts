@@ -14,7 +14,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
@@ -28,9 +28,11 @@ import {
 	ensureSddPreflight,
 	getSddPreflightPreferences,
 	installSddAssets,
+	isPackageManagedSddAsset,
 	isSddPreflightTrigger,
 	renderSddPreflightPrompt,
 	type SddPreflightPreferences,
+	updatePackageManagedSddAgentOwnership,
 } from "../lib/sdd-preflight.ts";
 import {
 	parseSddStatusCommandArgs,
@@ -42,8 +44,10 @@ import {
 	type SddPhase,
 } from "../lib/sdd-status.ts";
 import {
-	evaluateEvent,
+	buildDiffEvidence,
+	classifyReviewRoute,
 	type ChangedDiff,
+	type ReviewPlan,
 	type TriggerEvent,
 } from "../lib/review-triggers.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
@@ -57,10 +61,10 @@ function gentlePiAgentHome(): string {
 
 function sddGlobalAssetDriftCount(): number {
 	let stale = 0;
-	for (const [assetSubdir, installedSubdir] of [
-		["agents", "agents"],
-		["chains", "chains"],
-		["support", join("gentle-ai", "support")],
+	for (const [assetSubdir, installedSubdir, ownershipPrefix] of [
+		["agents", "agents", "agents"],
+		["chains", "chains", "chains"],
+		["support", join("gentle-ai", "support"), "gentle-ai/support"],
 	] as const) {
 		const assetDir = join(ASSETS_DIR, assetSubdir);
 		if (!existsSync(assetDir)) continue;
@@ -70,6 +74,14 @@ function sddGlobalAssetDriftCount(): number {
 			try {
 				if (!existsSync(installedPath)) {
 					stale += 1;
+					continue;
+				}
+				if (
+					!isPackageManagedSddAsset(
+						installedPath,
+						`${ownershipPrefix}/${entry.name}`,
+					)
+				) {
 					continue;
 				}
 				const packaged = readFileSync(join(assetDir, entry.name), "utf8");
@@ -1269,6 +1281,7 @@ export function applyModelConfig(
 			continue;
 		}
 		writeFileSync(agent.filePath, next);
+		updatePackageManagedSddAgentOwnership(agent.filePath, original, next);
 		updated += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
@@ -1309,6 +1322,7 @@ export async function applyModelConfigAsync(
 			continue;
 		}
 		await writeFile(agent.filePath, next);
+		updatePackageManagedSddAgentOwnership(agent.filePath, original, next);
 		updated += 1;
 	}
 	for (const [name, entry] of Object.entries(config)) {
@@ -2024,6 +2038,49 @@ export function classifyReviewEvent(command: string): TriggerEvent | null {
 	return null;
 }
 
+export interface ReviewCollectionTarget {
+	event: TriggerEvent;
+	cwd: string;
+}
+
+export function resolveReviewCollectionTarget(
+	command: string,
+	defaultCwd: string,
+): ReviewCollectionTarget | null {
+	const event = classifyReviewEvent(command);
+	if (!event) return null;
+	const selectedRepository = command
+		.trim()
+		.match(/^git\s+-C\s+(\S+)\s+(?:commit|push)\b/)?.[1];
+	return {
+		event,
+		cwd: selectedRepository ? resolve(defaultCwd, selectedRepository) : defaultCwd,
+	};
+}
+
+export interface ReviewDiffCollection {
+	event: TriggerEvent;
+	diff: ChangedDiff | null;
+}
+
+export type ReviewDiffCollector = (
+	event: TriggerEvent,
+	cwd: string,
+) => ChangedDiff | null;
+
+export function collectReviewDiffForCommand(
+	command: string,
+	defaultCwd: string,
+	collectDiff: ReviewDiffCollector,
+): ReviewDiffCollection | null {
+	const target = resolveReviewCollectionTarget(command, defaultCwd);
+	if (!target) return null;
+	return {
+		event: target.event,
+		diff: collectDiff(target.event, target.cwd),
+	};
+}
+
 /**
  * Parses the output of `git diff --numstat` into a ChangedDiff.
  * Binary files show `-  -  path`; their contribution to changedLines is 0.
@@ -2096,42 +2153,34 @@ function computeDiffForEvent(event: TriggerEvent, cwd: string): ChangedDiff | nu
 	}
 }
 
-/**
- * Runs the review gate for a bash command, composing with the existing
- * confirmCommand flow. Returns a block result for strong mode, notifies for
- * advisory mode, or returns undefined to fall through.
- */
-async function applyReviewGate(
-	command: string,
-	ctx: ExtensionContext,
-): Promise<ToolCallEventResult | undefined> {
-	const event = classifyReviewEvent(command);
-	if (!event) return undefined;
+export function reviewAdviceMessage(plan: ReviewPlan, event: TriggerEvent): string {
+	const lensSummary =
+		plan.lenses.length === 0
+			? "zero review lenses"
+			: `review lens${plan.lenses.length === 1 ? "" : "es"}: ${plan.lenses.join(", ")}`;
+	return `Review route ${plan.route} for ${event}; ${lensSummary}. ${plan.reason}. This advice does not block the command.`;
+}
 
-	const diff = computeDiffForEvent(event, ctx.cwd);
-	if (!diff) return undefined;
-
-	const result = evaluateEvent(event, diff);
-	if (!result) return undefined;
-
-	if (result.mode === "advisory") {
-		if (ctx.hasUI) {
-			const commitOrPush = event === "pre-push" ? "this push" : "this commit";
-			ctx.ui.notify(
-				`Review suggestion: consider running agent "${result.run.join(", ")}" before ${commitOrPush}. ${result.reason}`,
-				"info",
-			);
-		}
-		return undefined;
+export function applyReviewAdvice(
+	plan: ReviewPlan,
+	event: TriggerEvent,
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+): undefined {
+	if (ctx.hasUI) {
+		ctx.ui.notify(reviewAdviceMessage(plan, event), "info");
 	}
+	return undefined;
+}
 
-	// strong mode — block
-	return {
-		block: true,
-		reason:
-			`Gentle AI 4R review gate: run ${result.run.join(", ")} before this command. ` +
-			result.reason,
-	};
+function adviseReviewForCommand(command: string, ctx: ExtensionContext): undefined {
+	const collection = collectReviewDiffForCommand(command, ctx.cwd, computeDiffForEvent);
+	if (!collection) return undefined;
+	const evidence = buildDiffEvidence(
+		collection.event,
+		collection.diff ?? { changedPaths: [], changedLines: 0 },
+		collection.diff !== null,
+	);
+	return applyReviewAdvice(classifyReviewRoute(evidence), collection.event, ctx);
 }
 
 /** @internal */
@@ -2144,7 +2193,11 @@ export const __testing = {
 	loadRuntimeGuardrailsConfig,
 	buildGentlePrompt,
 	classifyReviewEvent,
+	collectReviewDiffForCommand,
+	applyReviewAdvice,
 	parseNumstat,
+	resolveReviewCollectionTarget,
+	reviewAdviceMessage,
 	renderSddModelPanel: renderSddModelPanelForTesting,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
@@ -2233,8 +2286,7 @@ export default function gentleAi(pi: ExtensionAPI): void {
 		if (event.toolName !== "bash") return undefined;
 		if (!isRecord(event.input) || typeof event.input.command !== "string")
 			return undefined;
-		const reviewGateResult = await applyReviewGate(event.input.command, ctx);
-		if (reviewGateResult) return reviewGateResult;
+		adviseReviewForCommand(event.input.command, ctx);
 		return confirmCommand(event.input.command, ctx);
 	});
 

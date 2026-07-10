@@ -149,6 +149,20 @@ Fresh review lenses are intentionally not token-saving devices; they buy indepen
 
 If multiple rows match, run the narrow set that covers the risk. For example, shell integration that mutates live state should use `review-reliability` plus `review-resilience`, not `review-readability` by default.
 
+### Review routing and refutation
+
+Review advice never blocks commands. Dangerous-command confirmation remains independently authoritative.
+
+- Objectively trivial diffs use zero review lenses.
+- Ordinary or ambiguous executable/configuration diffs use one dominant-risk lens.
+- 400 changed lines remains standard; 401 changed lines routes to full 4R.
+- Non-trivial hot paths use full 4R, while objectively trivial hot-path documentation remains trivial.
+- Pre-commit and pre-push are capped at standard and never run full 4R.
+
+The parent merges one authoritative ledger. WARNING and SUGGESTION stay informational; only surviving BLOCKER/CRITICAL findings can enter at most two scoped fix/re-review rounds. Standard review uses one decisive general refuter. Full 4R uses exactly three complete-list refuters and independent two-of-three voting per finding. Judgment Day uses two blind judges and zero refuters.
+
+`review-refuter` uses exactly `read`, `grep`, and `find` in a package-managed isolated installation. Project and user overrides may shadow the package asset; `gentle-pi` preserves those definitions and does not claim their effective permissions are package-compliant.
+
 ## SDD/OpenSpec flow
 
 ```text

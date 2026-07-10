@@ -5,6 +5,7 @@ import test from "node:test";
 
 const repoRoot = process.cwd();
 const assetsAgentsDir = join(repoRoot, "assets", "agents");
+const REVIEW_REFUTER_TOOLS = ["read", "grep", "find"];
 
 function readFrontmatter(path: string): string {
 	const text = readFileSync(path, "utf8");
@@ -66,5 +67,26 @@ test("project does not ship local SDD agent overrides", () => {
 		if (!existsSync(dir)) continue;
 		const overrides = readdirSync(dir).filter((entry) => /^sdd-.*\.md$/i.test(entry));
 		assert.deepEqual(overrides, [], `${relativeDir} must not shadow package SDD agents`);
+	}
+});
+
+test("review-refuter exposes only complete-list inspection tools", () => {
+	const path = join(assetsAgentsDir, "review-refuter.md");
+	assert.ok(existsSync(path), "review-refuter.md must exist");
+	assert.deepEqual(readTools(path), REVIEW_REFUTER_TOOLS);
+
+	const frontmatter = readFrontmatter(path);
+	assert.match(frontmatter, /^name:\s*review-refuter$/m);
+	for (const forbidden of [
+		"bash",
+		"edit",
+		"write",
+		"task",
+		"subagent",
+		"subagent_run",
+		"mem_save",
+		"mem_update",
+	]) {
+		assert.doesNotMatch(frontmatter, new RegExp(`^  - ${forbidden}$`, "m"));
 	}
 });

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -152,6 +153,21 @@ function createCtx(cwd, hasUI = false, sessionId = "session-1") {
 			},
 		},
 	};
+}
+
+function readAgentDefinition(source) {
+	const frontmatter = source.match(/^---\n([\s\S]*?)\n---/)?.[1];
+	assert.ok(frontmatter, "agent must have frontmatter");
+	const name = frontmatter.match(/^name:\s*(\S+)$/m)?.[1];
+	assert.ok(name, "agent must declare its identity");
+	const tools = [...frontmatter.matchAll(/^ {2}- ([\w-]+)$/gm)].map(
+		(match) => match[1],
+	);
+	return { name, tools };
+}
+
+function sha256(content) {
+	return createHash("sha256").update(content).digest("hex");
 }
 
 async function tempWorkspace() {
@@ -324,6 +340,17 @@ async function run() {
 	try {
 		const toolHook = hooks.get("tool_call")[0];
 		assert.equal(await toolHook({ toolName: "bash", input: { command: "git status" } }, createCtx(toolCwd)), undefined);
+		const reviewAdviceCtx = createCtx(toolCwd, true, "review-advice-session");
+		assert.equal(
+			await toolHook(
+				{ toolName: "bash", input: { command: "gh pr create --draft" } },
+				reviewAdviceCtx,
+			),
+			undefined,
+			"review advice must not block an otherwise allowed command",
+		);
+		assert.match(reviewAdviceCtx.ui.notifications.at(-1).message, /standard/);
+		assert.match(reviewAdviceCtx.ui.notifications.at(-1).message, /review-readability/);
 		const denied = await toolHook({ toolName: "bash", input: { command: "rm -rf /" } }, createCtx(toolCwd));
 		assert.equal(denied.block, true);
 		assert.match(denied.reason, /destructive/);
@@ -335,9 +362,18 @@ async function run() {
 		const sensitiveEdit = await toolHook({ toolName: "edit", input: { edits: [], path: join(toolCwd, "id_rsa.pem") } }, createCtx(toolCwd));
 		assert.equal(sensitiveEdit.block, true);
 		assert.equal(await toolHook({ toolName: "read", input: { path: join(toolCwd, "src", "index.ts") } }, createCtx(toolCwd)), undefined);
-		const needsConfirm = await toolHook({ toolName: "bash", input: { command: "git push" } }, createCtx(toolCwd));
+		const dangerousReviewCtx = createCtx(toolCwd, true, "dangerous-review-session");
+		const needsConfirm = await toolHook(
+			{ toolName: "bash", input: { command: "git push" } },
+			dangerousReviewCtx,
+		);
 		assert.equal(needsConfirm.block, true);
-		assert.match(needsConfirm.reason, /confirmation/);
+		assert.match(needsConfirm.reason, /not confirmed/);
+		assert.match(
+			dangerousReviewCtx.ui.notifications.at(-1).message,
+			/standard/,
+			"review advice must run without bypassing independent dangerous-command confirmation",
+		);
 	} finally {
 		await rm(toolCwd, { recursive: true, force: true });
 	}
@@ -380,13 +416,51 @@ async function run() {
 			"session_start must not install project-local SDD chains",
 		);
 		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
+		const installedRefuterPath = join(globalAgentHome, "agents", "review-refuter.md");
+		assert.equal(existsSync(installedRefuterPath), true);
+		assert.deepEqual(
+			readAgentDefinition(await readFile(installedRefuterPath, "utf8")),
+			{ name: "review-refuter", tools: ["read", "grep", "find"] },
+			"isolated package installation must activate only the refuter inspection tools",
+		);
 		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
 		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		await writeFile(join(globalAgentHome, "agents", "sdd-apply.md"), "stale global apply\n");
-		await writeFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), "stale global chain\n");
-		await writeFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), "stale global status contract\n");
+		const managedAssetsManifestPath = join(globalAgentHome, "gentle-ai", "managed-assets.json");
+		const managedAssetsManifest = JSON.parse(
+			await readFile(managedAssetsManifestPath, "utf8"),
+		);
+		const previousManagedApply = "stale global apply\n";
+		const previousManagedChain = "stale global chain\n";
+		const previousManagedSupport = "stale global status contract\n";
+		await writeFile(join(globalAgentHome, "agents", "sdd-apply.md"), previousManagedApply);
+		managedAssetsManifest.assets["agents/sdd-apply.md"] = sha256(previousManagedApply);
+		const samePathUserRefuter = [
+			"---",
+			"name: review-refuter",
+			"tools:",
+			"  - read",
+			"  - bash",
+			"---",
+			"user-owned runtime policy",
+			"",
+		].join("\n");
+		await writeFile(installedRefuterPath, samePathUserRefuter);
+		delete managedAssetsManifest.assets["agents/review-refuter.md"];
+		await mkdir(join(globalAgentHome, "subagents"), { recursive: true });
+		const userRefuterOverride = join(globalAgentHome, "subagents", "review-refuter.md");
+		await writeFile(userRefuterOverride, "user refuter override must stay\n");
+		await writeFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), previousManagedChain);
+		managedAssetsManifest.assets["chains/sdd-full.chain.md"] = sha256(previousManagedChain);
+		await writeFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), previousManagedSupport);
+		managedAssetsManifest.assets["gentle-ai/support/sdd-status-contract.md"] = sha256(previousManagedSupport);
+		await writeFile(
+			managedAssetsManifestPath,
+			JSON.stringify(managedAssetsManifest, null, 2),
+		);
 		await mkdir(join(noUiCwd, ".pi", "agents"), { recursive: true });
 		await writeFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "project override must stay\n");
+		const projectRefuterOverride = join(noUiCwd, ".pi", "agents", "review-refuter.md");
+		await writeFile(projectRefuterOverride, "project refuter override must stay\n");
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
@@ -394,6 +468,11 @@ async function run() {
 			await readFile(join(globalAgentHome, "agents", "sdd-apply.md"), "utf8"),
 			"stale global apply\n",
 			"session_start must refresh stale global SDD agents",
+		);
+		assert.equal(
+			await readFile(installedRefuterPath, "utf8"),
+			samePathUserRefuter,
+			"session refresh must preserve a same-path user-authored agent byte-for-byte",
 		);
 		assert.notEqual(
 			await readFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), "utf8"),
@@ -409,6 +488,16 @@ async function run() {
 			await readFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "utf8"),
 			"project override must stay\n",
 			"session_start must not overwrite project-local SDD overrides",
+		);
+		assert.equal(
+			await readFile(projectRefuterOverride, "utf8"),
+			"project refuter override must stay\n",
+			"package refresh must not rewrite or certify an explicit project refuter",
+		);
+		assert.equal(
+			await readFile(userRefuterOverride, "utf8"),
+			"user refuter override must stay\n",
+			"package refresh must not rewrite or certify an explicit user refuter",
 		);
 	} finally {
 		await rm(noUiCwd, { recursive: true, force: true });
