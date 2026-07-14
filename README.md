@@ -181,7 +181,7 @@ New ordinary review uses compact `gentle_review` `start -> finalize -> validate`
 
 Native contract pairing is exact: this adapter supports `gentle-ai 2.1.4` only from its package-local verified binary and rechecks that version before every native operation. Production native operations resolve an absolute package-owned path and never fall back to `PATH` or a global executable. Once v2.1.4 has written review authority, rollback MUST preserve every native store and receipt and MUST NOT run a downgraded binary against that repository. Disable the Pi route or roll forward to a compatible authority-aware release instead; deleting authority data or reinstalling an older binary is not a rollback path.
 
-Gentle AI v2.1.4 supports `gentle-ai review start --projection staged`, and upstream `main` now documents that focused-index workflow. `gentle-pi` v1.0.3 intentionally submits `projection: "workspace"` and does not expose staged projection yet. Native binary capability is not automatically a Pi adapter contract; package support still requires an adapter update, parity fixtures, and bounded validation.
+Gentle AI v2.1.4 supports `gentle-ai review start --projection staged`, and upstream `main` now documents that focused-index workflow. The current `gentle-pi` adapter intentionally submits `projection: "workspace"` and does not expose staged projection yet. Native binary capability is not automatically a Pi adapter contract; package support still requires an adapter update, parity fixtures, and bounded validation.
 
 ### FINALIZE wrapper input
 
