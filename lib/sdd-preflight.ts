@@ -13,6 +13,7 @@ const ASSETS_DIR = join(PACKAGE_ROOT, "assets");
 const MANAGED_ASSETS_MANIFEST = "managed-assets.json";
 const MANAGED_ASSETS_SCHEMA_VERSION = 1;
 const LEGACY_MANAGED_ASSET_MANIFESTS = Object.freeze([
+	{ path: join(ASSETS_DIR, "migrations", "managed-assets-v0.10.7.json"), version: "0.10.7" },
 	{ path: join(ASSETS_DIR, "migrations", "managed-assets-v0.13.json"), version: "0.13.0" },
 	{ path: join(ASSETS_DIR, "migrations", "managed-assets-v0.14.json"), version: "0.14.0" },
 ]);
@@ -318,7 +319,7 @@ function copyDirectoryFiles(
 	ownershipPrefix: string,
 	force: boolean,
 	manifest: ManagedAssetsManifest,
-	legacyAssetHashes: Readonly<Record<string, readonly string[]>> | undefined,
+	legacyAssetHashes: (() => Readonly<Record<string, readonly string[]>>) | undefined,
 ): { copied: number; skipped: number } {
 	if (!existsSync(sourceDir)) return { copied: 0, skipped: 0 };
 	mkdirSync(targetDir, { recursive: true });
@@ -360,7 +361,7 @@ function copyDirectoryFiles(
 				? undefined
 				: managedAssetHash(installedContent);
 			if (managedHash === undefined) {
-				const legacyHashes = legacyAssetHashes?.[ownershipKey];
+				const legacyHashes = legacyAssetHashes?.()[ownershipKey];
 				const comparableLegacyHash = installedContent === undefined
 					? undefined
 					: managedAssetHash(
@@ -399,9 +400,12 @@ export function installSddAssets(
 ): { agents: number; chains: number; support: number; skipped: number } {
 	const agentHome = gentlePiAgentHome();
 	const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
-	const legacyAssetHashes = force && !existsSync(manifestPath)
-		? readLegacyManagedAssetHashes()
-		: undefined;
+	let legacyAssetHashes: (() => Readonly<Record<string, readonly string[]>>) | undefined;
+	if (force) {
+		let cachedLegacyAssetHashes: Record<string, readonly string[]> | undefined;
+		legacyAssetHashes = () =>
+			(cachedLegacyAssetHashes ??= readLegacyManagedAssetHashes());
+	}
 	const manifest = readManagedAssetsManifest(manifestPath);
 	const agents = copyDirectoryFiles(
 		join(ASSETS_DIR, "agents"),

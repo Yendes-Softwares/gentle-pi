@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdtempSync,
@@ -118,6 +119,83 @@ test("writeSddPreflightToDisk is non-fatal when directory is not writable (no th
 	assert.doesNotThrow(() => {
 		writeSddPreflightToDisk("/nonexistent/path/that/cannot/be/created/gently", SAMPLE_PREFS);
 	});
+});
+
+test("forced asset refresh migrates the exact v0.10.7 malformed sdd-apply asset and preserves user edits", () => {
+	const packageRoot = join(import.meta.dirname, "..");
+	const legacySource = readFileSync(
+		join(
+			packageRoot,
+			"tests",
+			"fixtures",
+			"v0.10.7",
+			"assets",
+			"agents",
+			"sdd-apply.md",
+		),
+		"utf8",
+	);
+	const currentSource = readFileSync(
+		join(packageRoot, "assets", "agents", "sdd-apply.md"),
+		"utf8",
+	);
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v0107-preflight-"));
+	const temporaryUserAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v0107-user-preflight-"));
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const installed = join(temporaryAgentHome, "agents", "sdd-apply.md");
+	const userInstalled = join(temporaryUserAgentHome, "agents", "sdd-apply.md");
+	const userEdited = legacySource.replace(
+		"You are the SDD apply executor for Gentle AI.",
+		"You are the user-customized SDD apply executor for Gentle AI.",
+	);
+	try {
+		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		mkdirSync(join(temporaryAgentHome, "agents"), { recursive: true });
+		writeFileSync(installed, legacySource);
+		mkdirSync(join(temporaryAgentHome, "gentle-ai"), { recursive: true });
+		writeFileSync(
+			join(temporaryAgentHome, "gentle-ai", "managed-assets.json"),
+			JSON.stringify({ schemaVersion: 1, assets: {} }),
+		);
+
+		installSddAssets(packageRoot, true);
+
+		assert.equal(readFileSync(installed, "utf8"), currentSource);
+		assert.match(readFileSync(installed, "utf8"), /^tools:\n  - read$/m);
+		const managedAssets = JSON.parse(
+			readFileSync(
+				join(temporaryAgentHome, "gentle-ai", "managed-assets.json"),
+				"utf8",
+			),
+		) as { assets: Record<string, string> };
+		assert.equal(
+			managedAssets.assets["agents/sdd-apply.md"],
+			createHash("sha256").update(currentSource).digest("hex"),
+			"the migrated asset must record current package ownership",
+		);
+
+		installSddAssets(packageRoot, true);
+		assert.equal(
+			readFileSync(installed, "utf8"),
+			currentSource,
+			"a current package-managed asset must remain refreshable",
+		);
+
+		process.env.GENTLE_PI_AGENT_HOME = temporaryUserAgentHome;
+		mkdirSync(join(temporaryUserAgentHome, "agents"), { recursive: true });
+		writeFileSync(userInstalled, userEdited);
+		installSddAssets(packageRoot, true);
+		assert.equal(
+			readFileSync(userInstalled, "utf8"),
+			userEdited,
+			"a user-edited variant of the malformed legacy asset must remain untouched",
+		);
+	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		rmSync(temporaryAgentHome, { recursive: true, force: true });
+		rmSync(temporaryUserAgentHome, { recursive: true, force: true });
+	}
 });
 
 test("forced asset refresh migrates only untouched v0.14 package contracts and preserves user edits", () => {
