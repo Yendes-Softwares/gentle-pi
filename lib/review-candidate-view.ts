@@ -487,14 +487,45 @@ export class CandidateViewRegistry {
 
 	promoteCorrected(lineageId: string, token: string): void {
 		const replacement = this.records.get(token);
+		const projection = this.projections.get(lineageId);
 		const currentToken = this.lineages.get(lineageId);
 		const current = currentToken === undefined ? undefined : this.records.get(currentToken);
-		if (!replacement || replacement.lineageId !== undefined || !current) throw new CandidateViewError("corrected candidate replacement is missing or ambiguous");
+		if (!replacement || replacement.lineageId !== undefined || !projection || (currentToken !== undefined && (!current || current.lineageId !== lineageId))) {
+			throw new CandidateViewError("corrected candidate replacement is missing or ambiguous");
+		}
+		if (this.current !== undefined && this.current.lineageId !== lineageId) {
+			throw new CandidateViewError("corrected candidate replacement conflicts with the current lineage binding");
+		}
 		assertRecordSafe(replacement);
-		this.remove(current);
-		this.forget(current);
-		this.bindRecord(token, lineageId, []);
+		if (current) assertRecordSafe(current);
+		if (
+			replacement.contributorRoot !== projection.contributorRoot ||
+			replacement.baseCommit !== projection.baseCommit ||
+			replacement.baseTree !== projection.baseTree ||
+			replacement.committedOnly !== projection.committedOnly ||
+			!replacement.scope.paths.every((path) => projection.paths.includes(path))
+		) {
+			throw new CandidateViewError("corrected candidate replacement does not preserve its frozen lineage projection");
+		}
+		replacement.lineageId = lineageId;
+		replacement.selectedLenses = [];
+		this.lineages.set(lineageId, token);
+		for (const [key, pendingToken] of this.replays) if (pendingToken === token) this.replays.delete(key);
+		this.projections.set(lineageId, {
+			contributorRoot: replacement.contributorRoot,
+			baseCommit: replacement.baseCommit,
+			baseTree: replacement.baseTree,
+			candidateTree: replacement.candidateTree,
+			committedOnly: replacement.committedOnly,
+			paths: replacement.scope.paths,
+			modes: replacement.scope.modes,
+			deletedPaths: replacement.scope.deletedPaths,
+		});
 		this.current = { lineageId, token };
+		if (current) {
+			this.remove(current);
+			this.forget(current);
+		}
 	}
 
 	private validateSelectedLenses(lenses: readonly string[]): ReviewLens[] {

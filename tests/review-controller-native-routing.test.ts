@@ -475,6 +475,74 @@ test("fresh registry reload projects a correction state without accepting scope 
 	assert.equal(finalizes, 0);
 });
 
+test("reload correction projection replays approved native authority after promotion failure", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	const source = new CandidateViewRegistry();
+	const initial = source.create({ contributorRoot: cwd });
+	source.bindCurrent({ token: initial.token, lineageId: "reload-correction", selectedLenses: ["review-reliability"] });
+	mkdirSync(dirname(join(cwd, ".git", "gentle-ai", "review-transactions", "v2", "reload-correction", "review-state.json")), { recursive: true });
+	writeFileSync(join(cwd, ".git", "gentle-ai", "review-transactions", "v2", "reload-correction", "review-state.json"), JSON.stringify({ schema: "gentle-ai.review-state-record/v2", state: { schema: "gentle-ai.review-state/v2", lineage_id: "reload-correction", state: "correction_required", initial_snapshot: { kind: "current-changes", base_tree: initial.baseTree, candidate_tree: initial.candidateTree, paths: initial.paths, paths_digest: "paths" }, current_snapshot: { kind: "current-changes", base_tree: initial.baseTree, candidate_tree: initial.candidateTree, paths: initial.paths, paths_digest: "paths" }, fix_finding_ids: ["RELIABILITY-001"], findings: [{ id: "RELIABILITY-001", severity: "CRITICAL" }] } }));
+	source.cleanupTerminal("reload-correction", "approved");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
+	const candidateViews = new CandidateViewRegistry();
+	const promoteCorrected = candidateViews.promoteCorrected.bind(candidateViews);
+	let promotedToken: string | undefined;
+	let finalizes = 0;
+	let nativeMutations = 0;
+	let validations = 0;
+	candidateViews.promoteCorrected = (lineageId, token) => {
+		if (promotedToken === undefined) {
+			promotedToken = token;
+			throw new Error("injected projection promotion failure");
+		}
+		assert.equal(token, promotedToken);
+		promoteCorrected(lineageId, token);
+	};
+	const { controller, toolCall } = runtime(fakeNative({
+		finalize: async (request) => {
+			finalizes += 1;
+			if (finalizes === 1) nativeMutations += 1;
+			assert.notEqual(request.cwd, cwd);
+			return { lineageId: "reload-correction", state: "approved", action: "approved", storeRevision: "r2" };
+		},
+		validate: async () => {
+			validations += 1;
+			return { allowed: true, result: "allow", action: "continue", reason: "corrected receipt matches", gateContext: nativeGateContext("reload-correction", "r2", git(cwd, "write-tree")) };
+		},
+	}), undefined, undefined, undefined, candidateViews);
+	const required = await controller.execute("reload-correction-request", { operation: "finalize", lineageId: "reload-correction", input: JSON.stringify({ final_evidence: "focused tests passed", final_verification_passed: true }) }, undefined, undefined, context(cwd));
+	const request = required.details as { outcome: string; validation_request: { request_hash: string; fix_finding_ids: string[] } };
+	assert.equal(request.outcome, "validation-required");
+	const input = JSON.stringify({
+		validation: {
+			request_hash: request.validation_request.request_hash,
+			correction_ids: request.validation_request.fix_finding_ids,
+			original_criteria: { passed: true, evidence: ["focused tests passed"] },
+			correction_regression: { passed: true, evidence: ["correction regression passed"] },
+			fix_caused_findings: [],
+			follow_ups: [],
+		},
+		final_evidence: "focused tests passed",
+		final_verification_passed: true,
+	});
+	const failed = await controller.execute("reload-correction-approve", { operation: "finalize", lineageId: "reload-correction", input }, undefined, undefined, context(cwd));
+	assert.deepEqual(failed.details, { operation: "finalize", status: "blocked", outcome: "post-native-finalize-reconciliation-required", mutation_performed: true, mutation_outcome: "committed", lineage_id: "reload-correction", state: "approved", store_revision: "r2", next_action: "replay-exact-native-operation" });
+	const approved = await controller.execute("reload-correction-replay", { operation: "finalize", lineageId: "reload-correction", input }, undefined, undefined, context(cwd));
+	assert.equal((approved.details as { result: { state: string } }).result.state, "approved");
+	assert.equal(finalizes, 2);
+	assert.equal(nativeMutations, 1);
+	git(cwd, "add", "--", "app.ts");
+	const correctedTree = git(cwd, "write-tree");
+	assert.equal(candidateViews.resolveProjection("reload-correction", cwd).candidateTree, correctedTree);
+	const command = "git commit -m corrected-after-reload";
+	const validated = await controller.execute("reload-correction-pre-commit", { operation: "validate", lineageId: "reload-correction", idempotencyKey: "reload-correction-pre-commit", command, input: "{}" }, undefined, undefined, context(cwd));
+	assert.notEqual((validated.details as { authorization?: unknown }).authorization, undefined);
+	assert.equal(await toolCall({ toolName: "bash", input: { command } }, interactiveContext(cwd)), undefined);
+	assert.equal(validations, 2);
+	assert.equal(candidateViews.hasCurrentBinding(), false);
+});
+
 test("native FINALIZE derives and requires the trusted refuter request before invoking native FINALIZE", async (t) => {
 	const cwd = repository(t);
 	let finalizes = 0;

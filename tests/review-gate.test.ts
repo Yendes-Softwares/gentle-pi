@@ -655,11 +655,60 @@ function setRemoteMain(repository: GateRepository, commit: string): void {
 // under test is present in the invoked arguments — mirroring `gh api
 // repos/{owner}/{repo}/commits/<sha>/status` being bound to one exact SHA.
 function successfulGhCommandRunner(expectedSha: string): GhCommandRunnerV1 {
-	return (args) => ({
-		status: args.some((arg) => arg.includes(expectedSha)) ? 0 : 1,
-		stdout: "success",
-	});
+	return (args) => {
+		if (!args.some((arg) => arg.includes(expectedSha))) return { status: 1, stdout: "" };
+		if (args[1] === `repos/{owner}/{repo}/commits/${expectedSha}/check-runs?per_page=100`) {
+			return {
+				status: 0,
+				stdout: JSON.stringify({ total_count: 1, returned: 1, checks: [["completed", "success"]] }),
+			};
+		}
+		return { status: 0, stdout: "success" };
+	};
 }
+
+test("release fast path independently accepts complete successful Check Runs despite a pending legacy status", (t) => {
+	const repository = createGateRepository(t);
+	setRemoteMain(repository, repository.finalCommit);
+	const calls: string[][] = [];
+	const checkRuns = (checks: unknown[], totalCount = checks.length, legacyStatus = "pending"): GhCommandRunnerV1 => (args) => {
+		calls.push([...args]);
+		if (args[1] === `repos/{owner}/{repo}/commits/${repository.finalCommit}/check-runs?per_page=100`) {
+			return { status: 0, stdout: JSON.stringify({ total_count: totalCount, returned: checks.length, checks }) };
+		}
+		return { status: 0, stdout: legacyStatus };
+	};
+	const successful = [["completed", "success"], ["completed", "success"], ["completed", "success"]];
+	const evaluation = evaluateReleaseFastPathV1({
+		target: releaseTarget(repository),
+		evidence: fastPathEvidence(repository),
+		repositoryCwd: repository.repository,
+		ghCommandRunner: checkRuns(successful),
+	});
+	assert.equal(evaluation.eligible, true, evaluation.reason);
+	assert.deepEqual(calls, [[
+		"api",
+		`repos/{owner}/{repo}/commits/${repository.finalCommit}/check-runs?per_page=100`,
+		"--jq",
+		"{total_count, returned: (.check_runs | length), checks: [.check_runs[] | [.status, .conclusion]]}",
+	]]);
+	for (const [name, checks, totalCount, legacyStatus, eligible] of [
+		["failed check", [["completed", "failure"]], 1, "pending", false],
+		["pending check", [["in_progress", null]], 1, "pending", false],
+		["partial enumeration", successful, 4, "success", false],
+		["legacy success without checks", [], 0, "success", true],
+		["legacy pending without checks", [], 0, "pending", false],
+		["missing legacy status without checks", [], 0, "", false],
+	] as const) {
+		const result = evaluateReleaseFastPathV1({
+			target: releaseTarget(repository),
+			evidence: fastPathEvidence(repository),
+			repositoryCwd: repository.repository,
+			ghCommandRunner: checkRuns(checks, totalCount, legacyStatus),
+		});
+		assert.equal(result.eligible, eligible, name);
+	}
+});
 
 test("release fast path proves the immutable origin/main SHA and ignores local branch position and worktree dirtiness", (t) => {
 	const repository = createGateRepository(t);

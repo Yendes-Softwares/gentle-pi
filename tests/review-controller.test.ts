@@ -36,8 +36,11 @@ import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 setReviewMutationLockPlatformForTesting(qualifiedReviewLockPlatform());
 // The release fast path independently derives required CI success via the
 // gh CLI; these controller-level fixtures are local bare clones with no real
-// GitHub remote, so a deterministic stub stands in for `gh` in tests.
-setReleaseGhCommandRunnerForTestingV1(() => ({ status: 0, stdout: "success" }));
+// GitHub remote, so a deterministic Check Runs response stands in for `gh`.
+// Legacy combined status stays pending to model Checks-only repositories.
+setReleaseGhCommandRunnerForTestingV1((args) => args[1]?.includes("/check-runs?")
+	? { status: 0, stdout: JSON.stringify({ total_count: 1, returned: 1, checks: [["completed", "success"]] }) }
+	: { status: 0, stdout: "pending" });
 
 interface ReviewToolResult {
 	content: Array<{ type: string; text: string }>;
@@ -1628,6 +1631,7 @@ test("controller release fast path bypasses receipt validation only for the prov
 	const fixture = createRepository(t, true);
 	assert.ok(fixture.finalCommit && fixture.finalTree && fixture.tagObject);
 	const remotePath = join(fixture.parent, "remote.git");
+	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.5", "-m", "patch release", fixture.finalCommit);
 	execFileSync("git", ["clone", "--bare", fixture.repository, remotePath], {
 		cwd: fixture.parent,
 		stdio: ["ignore", "pipe", "pipe"],
@@ -1646,7 +1650,7 @@ test("controller release fast path bypasses receipt validation only for the prov
 		post_incident: false,
 	};
 
-	const command = "gh release create v1.2.3 --notes bounded";
+	const command = "gh release create v1.0.5 --notes bounded";
 	const validated = await controllerCall(controller, ctx, {
 		operation: "validate",
 		idempotencyKey: "release-fast-path",

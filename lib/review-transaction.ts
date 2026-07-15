@@ -2484,28 +2484,54 @@ function defaultGhCommandRunner(
 }
 
 // Independently derives whether required CI succeeded for the exact remote
-// SHA via the `gh` CLI. Caller-supplied CI evidence is never sufficient
-// alone: if `gh` is unavailable, errors, or does not prove success bound to
-// this exact SHA, the condition is UNPROVABLE and the caller must fail
-// closed to native receipt validation.
+// SHA via the `gh` CLI. Check Runs are the modern GitHub Actions authority;
+// the legacy combined status is consulted only when the exact SHA has no
+// Check Runs. Caller-supplied CI evidence is never sufficient alone.
 function deriveReleaseCiStatusForShaV1(options: {
 	repositoryCwd: string;
 	sha: string;
 	ghCommandRunner: GhCommandRunnerV1;
 }): { proven: boolean; status: string | null } {
-	let result: { status: number | null; stdout: string; error?: Error };
+	const runnerOptions = { cwd: options.repositoryCwd, env: reviewGitEnvironment() };
+	let checkRunsResult: { status: number | null; stdout: string; error?: Error };
 	try {
-		result = options.ghCommandRunner(
-			["api", `repos/{owner}/{repo}/commits/${options.sha}/status`, "--jq", ".state"],
-			{ cwd: options.repositoryCwd, env: reviewGitEnvironment() },
+		checkRunsResult = options.ghCommandRunner(
+			[
+				"api",
+				`repos/{owner}/{repo}/commits/${options.sha}/check-runs?per_page=100`,
+				"--jq",
+				"{total_count, returned: (.check_runs | length), checks: [.check_runs[] | [.status, .conclusion]]}",
+			],
+			runnerOptions,
 		);
 	} catch {
 		return { proven: false, status: null };
 	}
-	if (result.error || result.status !== 0) return { proven: false, status: null };
-	const status = result.stdout.trim();
-	if (status.length === 0) return { proven: false, status: null };
-	return { proven: true, status };
+	if (checkRunsResult.error || checkRunsResult.status !== 0) return { proven: false, status: null };
+	let summary: unknown;
+	try {
+		summary = JSON.parse(checkRunsResult.stdout);
+	} catch {
+		return { proven: false, status: null };
+	}
+	if (!isRecord(summary) || !Number.isSafeInteger(summary.total_count) || !Number.isSafeInteger(summary.returned) || !Array.isArray(summary.checks) || summary.total_count < 0 || summary.returned < 0 || summary.returned !== summary.checks.length || summary.total_count !== summary.checks.length) {
+		return { proven: false, status: null };
+	}
+	if (summary.total_count > 0) {
+		const successful = summary.checks.every((check) => Array.isArray(check) && check.length === 2 && check[0] === "completed" && check[1] === "success");
+		return successful ? { proven: true, status: "success" } : { proven: false, status: null };
+	}
+	let legacyResult: { status: number | null; stdout: string; error?: Error };
+	try {
+		legacyResult = options.ghCommandRunner(
+			["api", `repos/{owner}/{repo}/commits/${options.sha}/status`, "--jq", ".state"],
+			runnerOptions,
+		);
+	} catch {
+		return { proven: false, status: null };
+	}
+	if (legacyResult.error || legacyResult.status !== 0 || legacyResult.stdout.trim() !== "success") return { proven: false, status: null };
+	return { proven: true, status: "success" };
 }
 
 export function evaluateReleaseFastPathV1(options: {

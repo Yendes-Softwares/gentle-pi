@@ -284,6 +284,33 @@ test("corrected views stay within frozen scope and replace projections only when
 	registry.cleanupTerminal("correction", "approved");
 });
 
+test("projection-only correction promotion replaces the stale projection and rejects competing bindings", (t) => {
+	const contributorRoot = repository(t);
+	writeFileSync(join(contributorRoot, "tracked.txt"), "reviewed\n");
+	const source = new CandidateViewRegistry();
+	const original = source.create({ contributorRoot });
+	const restored = new CandidateViewRegistry();
+	try {
+		restored.restoreProjection("projection-only", contributorRoot, original.baseCommit, original.baseTree, original.candidateTree, original.paths);
+		source.cleanup(original.token);
+		writeFileSync(join(contributorRoot, "tracked.txt"), "corrected\n");
+		const corrected = restored.createCorrected("projection-only", contributorRoot, "corrected-replay");
+		const competing = restored.create({ contributorRoot });
+		restored.bindCurrent({ token: competing.token, lineageId: "competing", selectedLenses: ["review-reliability"] });
+		assert.throws(() => restored.promoteCorrected("projection-only", corrected.token), /conflicts|ambiguous/);
+		restored.cleanup(competing.token);
+		assert.throws(() => restored.promoteCorrected("wrong-lineage", corrected.token), /missing|ambiguous/);
+		assert.throws(() => restored.createCorrected("projection-only", repository(t), "wrong-root"), /different contributor root/);
+		restored.promoteCorrected("projection-only", corrected.token);
+		assert.equal(restored.resolveProjection("projection-only", contributorRoot).candidateTree, corrected.candidateTree);
+		restored.cleanupTerminal("projection-only", "approved");
+		assert.equal(restored.resolveProjection("projection-only", contributorRoot).candidateTree, corrected.candidateTree);
+	} finally {
+		source.cleanup(original.token);
+		restored.cleanupTerminal("projection-only", "escalated");
+	}
+});
+
 test("candidate view exposes a compact 45-path changed scope for a 293-entry candidate tree", (t) => {
 	const contributorRoot = repository(t);
 	for (let index = 0; index < 248; index += 1) {

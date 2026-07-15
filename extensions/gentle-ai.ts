@@ -5016,6 +5016,7 @@ async function executeReviewControllerOperation(
 			let correctionCompletion = false;
 			let authoritativeState: unknown;
 			let candidateView: ReturnType<CandidateViewRegistry["create"]> | undefined;
+			let nativeResult: NativeFinalizeResult;
 			try {
 				if (candidateViews && parameters.lineageId === undefined) throw new CandidateViewError("Native FINALIZE requires an explicit candidate-view lineage");
 				correctionCompletion = input.review_result === undefined && (input.validation !== undefined || input.validation_proof !== undefined) && input.final_evidence !== undefined;
@@ -5064,7 +5065,7 @@ async function executeReviewControllerOperation(
 						throw new Error("Native FINALIZE refuter material is invalid without inferential candidate-caused severe findings");
 					}
 				}
-				const result = await nativeReviewCli.finalize({
+				nativeResult = await nativeReviewCli.finalize({
 					cwd: candidateView?.root ?? defaultCwd,
 					...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 					...(input.review_result === undefined ? {} : { lensResults: input.review_result.lens_results.map((document, index) => ({ lens: document.lens ?? `lens-${index}`, document: toNativeReviewerDocument(document) })) }),
@@ -5074,15 +5075,27 @@ async function executeReviewControllerOperation(
 					...(input.final_evidence === undefined ? {} : { evidenceDocument: input.final_evidence, failed: input.final_verification_passed === false }),
 					...(signal === undefined ? {} : { signal }),
 				});
-				try {
-					if (correctionCompletion && candidateViews && parameters.lineageId) candidateViews.promoteCorrected(parameters.lineageId, candidateView!.token);
-					candidateViews?.cleanupTerminal(result.lineageId, result.state);
-				} catch {}
-				return { operation: parameters.operation, result: mapNativeFinalizeResult(result) };
 			} catch (error) {
 				const value = error as { mutationOutcome?: unknown; nextAction?: unknown };
 				if (correctionCompletion && candidateView && candidateViews && value.mutationOutcome !== "unknown" && value.nextAction !== "replay-exact-native-operation") candidateViews.cleanup(candidateView.token);
 				return nativeOperationFailure(parameters.operation, error);
+			}
+			try {
+				if (correctionCompletion && candidateViews && parameters.lineageId) candidateViews.promoteCorrected(parameters.lineageId, candidateView!.token);
+				candidateViews?.cleanupTerminal(nativeResult.lineageId, nativeResult.state);
+				return { operation: parameters.operation, result: mapNativeFinalizeResult(nativeResult) };
+			} catch {
+				return {
+					operation: parameters.operation,
+					status: "blocked",
+					outcome: "post-native-finalize-reconciliation-required",
+					mutation_performed: true,
+					mutation_outcome: "committed",
+					lineage_id: nativeResult.lineageId,
+					state: nativeResult.state,
+					store_revision: nativeResult.storeRevision,
+					next_action: "replay-exact-native-operation",
+				};
 			}
 		}
 		return {
