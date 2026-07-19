@@ -191,7 +191,7 @@ When target status is `current_target`, follow its single native action. `ambigu
 
 Preserve the negotiated failure envelope exactly. `mutation_outcome: not_started` proves no mutation. For `unknown` or lost mutating output, the controller immediately calls target-scoped status and returns its exact action; it never emits a generic replay instruction. Replay the exact START or FINALIZE only when that provider result declares `exact_replay_safe` for the same canonical request and required lineage. Never choose a lineage merely because output was lost.
 
-Before authority access, `mutation_outcome: not_started` means no lineage was created. In the historical lane only, RESET and RECOVER internally INSPECT and may proceed only after verified clean authority.
+Before authority access, `mutation_outcome: not_started` means no lineage was created. In the historical lane only, authorized RESET and RECOVER route to the audited native `gentle-ai review reclaim` and `gentle-ai review recover` operations; missing native inputs return `native-input-required` and are never invented, and INSPECT follows every committed native recovery record.
 
 Ordinary review runs the selected zero, one, or four lenses exactly once against `initial_review_tree`.
 
@@ -227,9 +227,9 @@ Judgment Day alone may iterate discovery and scoped re-judgment, for at most two
 
 Findings surviving round two escalate; no third-round transition exists.
 
-Graph-v1 ordinary authority remains readable/gate-valid/exportable but read-only. Judgment Day remains mutable on graph-v1. Same-lineage graph/compact ambiguity fails closed and reset quarantines both.
+Graph-v1 ordinary authority remains readable and gate-valid but read-only. Legacy graph bundle export/import is retired. Judgment Day remains mutable on graph-v1, and native target status owns mixed-authority ambiguity and maintainer action.
 
-Compact gate validation is read-only and double-checks authority, target, publication refs, and evidence immediately before allow. Pi then registers one exact one-shot command authorization and rederives the target at bash time.
+Native compact gate validation is read-only and double-checks authority, target, publication refs, and evidence immediately before allow. Pi then registers one exact one-shot command authorization and rederives the target at bash time. The Pi-owned publication-gate module isolates typed targets, remote binding, release projection, and publication rechecks from graph-v1 authority storage; graph receipt validation remains reachable only for historical graph authority and explicit Judgment Day.
 Release from protected `main` may bypass receipt validation only when the tag targets the current immutable `origin/main` SHA, required CI for that exact SHA is successful, the remote head is rechecked before tag push, and no fresh risk evidence exists; otherwise release fails closed through native receipt validation.
 Major and post-incident releases require explicit extraordinary review even when fast-path checks pass.
 
