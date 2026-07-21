@@ -11,6 +11,15 @@
 [![SDD/OpenSpec](https://img.shields.io/badge/SDD-OpenSpec-00ADD8)](#sddopenspec-flow)
 [![Subagents](https://img.shields.io/badge/Pi-subagents-brightgreen)](#what-it-adds)
 
+> [!IMPORTANT]
+> **RDD is unstable.** Native Receipt-Driven Development started in `gentle-pi` `v0.15.0`. Every release from `v0.15.0` onward is part of the RDD development line and may change while remaining issues are fixed.
+>
+> For a stable installation without RDD, use the last version before native RDD, `v0.14.0`:
+> ```bash
+> pi install npm:gentle-pi@0.14.0
+> ```
+> To test the latest released RDD build, use `@latest`.
+
 **Turn Pi from a powerful coding agent into a controlled development harness.**
 
 `gentle-pi` installs **el Gentleman** in Pi: a senior-architect operating layer for Spec-Driven Development, focused subagents, strict TDD evidence, reviewable work units, safety guards, project/user skill discovery, and bounded native review.
@@ -64,10 +73,22 @@ Most coding-agent sessions fail for operational reasons, not model reasons:
 ## Install
 
 ```bash
-pi install npm:gentle-pi
+pi install npm:gentle-pi@0.14.0
 ```
 
-The npm postinstall downloads the exact platform-specific official Gentle AI v2.1.11 archive into this package's private `.gentle-ai/v2.1.11/` directory and verifies its pinned archive and executable SHA-256 values before extraction. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error until the package is reinstalled normally.
+### RDD version policy
+
+Native RDD started in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. Every release from `v0.15.0` onward is part of the unstable RDD development line. New releases will continue improving RDD until the project declares the line stable. The stable version for normal use without native RDD is the last preceding release, `v0.14.0`.
+
+```bash
+# Stable version without native RDD
+pi install npm:gentle-pi@0.14.0
+
+# Latest released RDD build (unstable)
+pi install npm:gentle-pi@latest
+```
+
+The latest RDD package downloads its pinned platform-specific Gentle AI binary into the package's private `.gentle-ai/` directory and verifies archive and executable SHA-256 values before extraction. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error until the package is reinstalled normally.
 
 Recommended companion packages:
 
